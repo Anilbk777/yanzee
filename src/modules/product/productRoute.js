@@ -20,9 +20,7 @@ import {
 
 const productRouter = Router();
 
-// Every product route is owner-scoped. requireShop resolves the shop from the
-// JWT; verifyShopHeader only cross-checks the optional x-shop-id header.
-const ownerOnly = [authenticateUser, requireOwner, requireShop, verifyShopHeader];
+const ownerOnly = [authenticateUser, requireOwner];
 
 productRouter.post("/", ...ownerOnly, validateRequest(CreateProductSchema), createProductController);
 productRouter.get("/", ...ownerOnly, validateQuery(ListProductsQuerySchema), listProductsController);

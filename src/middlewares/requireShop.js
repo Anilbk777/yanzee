@@ -10,13 +10,13 @@ const requireShop = async (req, res, next) => {
         const shop = await getShopByOwnerId(req.userId);
 
         if (!shop) {
-            return next(new AppError("You do not have a shop yet", constants.NotFound));
+            throw new AppError("You do not have a shop yet", constants.NotFound);
         }
 
         req.shop = shop;
-        return next();
+        next();
     } catch (error) {
-        return next(error);
+        next(error);
     }
 };
 

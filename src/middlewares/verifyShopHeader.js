@@ -11,12 +11,9 @@ const verifyShopHeader = (req, res, next) => {
     const headerShopId = req.get(SHOP_ID_HEADER);
 
     if (headerShopId && headerShopId !== req.shop.id) {
-        return next(
-            new AppError("x-shop-id does not match the authenticated shop", constants.Forbidden)
-        );
+        throw new AppError("x-shop-id does not match the authenticated shop", constants.Forbidden);
     }
-
-    return next();
+    next();
 };
 
 export default verifyShopHeader;

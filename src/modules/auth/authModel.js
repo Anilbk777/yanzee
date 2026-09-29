@@ -20,17 +20,24 @@ export const getUserById = async (userId) => {
             email: true,
             role: true,
             profileImg: true,
-            phone:true,
-            gender:true,
-            address:true,
-            city:true,
-            province:true,
-            district:true,
-            country:true,
+            phone: true,
+            gender: true,
+            address: true,
+            city: true,
+            province: true,
+            district: true,
+            country: true,
+            shop: {
+                select: {
+                    id: true,
+                    name: true,
+                    ownerId: true,
+                },
+            },
         },
-        where: { id: userId }
-    })
-}
+        where: { id: userId },
+    });
+};
 
 export const createRefreshToken = async (data) => {
     return await prisma.refreshToken.create({

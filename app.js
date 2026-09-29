@@ -45,7 +45,7 @@ app.head("/health", (req, res) => {
 
 // Route Not Found Handler
 app.use((req, res, next) => {
-    throw new AppError(`Route ${req.originalUrl} not found`, constants.NotFound);
+    throw new AppError(` ${req.method} with ${req.originalUrl} route not found`, constants.NotFound);
 });
 
 // Global Error Handler

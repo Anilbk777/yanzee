@@ -1,4 +1,6 @@
 import prisma from "../../config/dbConfig.js";
+import AppError from  "../../utils/AppError.js";
+import constants from "../../utils/constants.js";
 
 const SHOP_SELECT = {
     id: true,
@@ -26,14 +28,12 @@ const SHOP_SELECT = {
 export const createShop = async (data) => {
     return await prisma.shop.create({
         data,
-        select: SHOP_SELECT,
     });
 };
 
 export const getShopByOwnerId = async (ownerId) => {
     return await prisma.shop.findUnique({
         where: { ownerId },
-        select: SHOP_SELECT,
     });
 };
 
@@ -48,7 +48,6 @@ export const updateShopById = async (shopId, data) => {
     return await prisma.shop.update({
         where: { id: shopId },
         data,
-        select: SHOP_SELECT,
     });
 };
 
@@ -82,3 +81,13 @@ export const listShops = async ({ page, limit, search }) => {
 
     return { shops, total };
 };
+
+
+export const getShopByName = async (name) => {
+    const shop = await prisma.shop.findFirst({
+        where: { name },
+    });
+    if (shop) {
+        throw new AppError("Shop name already exists", constants.Conflict);
+    }
+}

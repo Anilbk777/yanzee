@@ -8,6 +8,7 @@ import {
     updateShopById,
     deleteShopById,
     listShops,
+    getShopByName
 } from "./shopModel.js";
 
 const isUniqueViolation = (error) => error?.code === "P2002";
@@ -17,29 +18,28 @@ const isForeignKeyViolation = (error) => error?.code === "P2003";
 const createShopService = async (ownerId, payload) => {
     logger.info({ ownerId }, "Attempting to create shop");
 
-    const existingShop = await getShopByOwnerId(ownerId);
+    const tasks = [
+        getShopByOwnerId(ownerId),
+        getShopByName(payload.name)
+    ]
+    const [existingShop,] = await Promise.all(tasks);
+
     if (existingShop) {
         throw new AppError("You already own a shop", constants.Conflict);
     }
 
     const { name, contactEmail, image, description, returnPolicy } = payload;
 
-    let shop;
-    try {
-        shop = await createShop({
-            ownerId,
-            name,
-            contactEmail,
-            image: image ?? null,
-            description: description ?? null,
-            returnPolicy: returnPolicy ?? null,
-        });
-    } catch (error) {
-        if (isUniqueViolation(error)) {
-            throw new AppError("You already own a shop", constants.Conflict);
-        }
-        throw error;
-    }
+
+    const shop = await createShop({
+        ownerId,
+        name,
+        contactEmail,
+        image: image ?? null,
+        description: description ?? null,
+        returnPolicy: returnPolicy ?? null,
+    });
+
 
     logger.info({ shopId: shop.id, ownerId }, "Shop created successfully");
 
@@ -68,15 +68,7 @@ const updateMyShopService = async (shop, payload) => {
         }
     }
 
-    let updatedShop;
-    try {
-        updatedShop = await updateShopById(shop.id, data);
-    } catch (error) {
-        if (isMissingRecord(error)) {
-            throw new AppError("Shop not found", constants.NotFound);
-        }
-        throw error;
-    }
+    const updatedShop = await updateShopById(shop.id, data);
 
     logger.info({ shopId: updatedShop.id }, "Shop updated successfully");
 
@@ -93,9 +85,6 @@ const deleteMyShopService = async (shop) => {
     try {
         await deleteShopById(shop.id);
     } catch (error) {
-        if (isMissingRecord(error)) {
-            throw new AppError("Shop not found", constants.NotFound);
-        }
         // Orders reference the shop without a cascade, so a shop that already
         // has orders cannot be removed.
         if (isForeignKeyViolation(error)) {
@@ -116,7 +105,9 @@ const deleteMyShopService = async (shop) => {
 };
 
 const getShopByIdService = async (shopId) => {
+    logger.info({ shopId }, "Attempting to get shop by ID");
     const shop = await getShopById(shopId);
+    
 
     if (!shop) {
         throw new AppError("Shop not found", constants.NotFound);
@@ -130,6 +121,7 @@ const getShopByIdService = async (shopId) => {
 };
 
 const listShopsService = async ({ page, limit, search }) => {
+    logger.info({ page, limit, search }, "Attempting to list shops");
     const { shops, total } = await listShops({ page, limit, search });
 
     return {

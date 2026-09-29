@@ -8,6 +8,7 @@ import {
     listProducts,
     updateProductById,
     deleteProductById,
+    getProductsByName
 } from "./productModel.js";
 
 const isUniqueViolation = (error) => error?.code === "P2002";
@@ -33,6 +34,10 @@ const createProductService = async (shop, payload) => {
     logger.info({ shopId: shop.id }, "Attempting to create product");
 
     const { name, description, category, status, price, discountPrice, image, gallery, variants } = payload;
+    let existingProductName = await getProductsByName(shop.id, name);
+    if (existingProductName) {
+        throw new AppError("Product name already exists", constants.Conflict);
+    }
 
     let product;
     try {
@@ -60,7 +65,7 @@ const createProductService = async (shop, payload) => {
     return {
         statusCode: 201,
         message: "Product created successfully",
-        data: { product: serializeProduct(product) },
+        data: { product: { id: product.id, name: product.name } },
     };
 };
 
@@ -79,9 +84,10 @@ const getProductByIdService = async (shop, productId) => {
 };
 
 const listProductsService = async (shop, query) => {
+    logger.info("Attempting to list products");
     const { page, limit, search, category, status, sort } = query;
     const { products, total } = await listProducts({ shopId: shop.id, page, limit, search, category, status, sort });
-
+    logger.info("Products listed successfully");
     return {
         statusCode: 200,
         message: "Products fetched successfully",
@@ -106,6 +112,12 @@ const updateProductByIdService = async (shop, productId, payload) => {
     const existing = await getProductPricing(shop.id, productId);
     if (!existing) {
         throw new AppError("Product not found", constants.NotFound);
+    }
+    if (payload.name) {
+        let existingProductName = await getProductsByName(shop.id, payload.name);
+        if (existingProductName) {
+            throw new AppError("Product name already exists", constants.Conflict);
+        }
     }
 
     // On a partial update the comparison has to run against the values that

@@ -29,7 +29,7 @@ model User {
   id              String    @id @default(uuid())
   email           String    @unique
   password        String   
-  phone           String    @unique
+  phone           String    
   fullName        String 
   gender          Gender    @default(MALE)
   role            UserRole  @default(CUSTOMER)
@@ -71,7 +71,7 @@ model Shop {
   ownerId      String   @unique @map("owner_id")
   owner        User     @relation(fields: [ownerId], references: [id], onDelete: Cascade)
 
-  name         String
+  name         String  
   image        String?               
   description  String?  
   contactEmail String   

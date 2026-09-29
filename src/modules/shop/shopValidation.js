@@ -66,9 +66,6 @@ export const UpdateShopSchema = z
             .max(200, "Return policy cannot exceed 200 characters")
             .optional()
             .nullable(),
-    })
-    .refine((data) => Object.keys(data).length > 0, {
-        message: "At least one field is required to update",
     });
 
 export const ShopIdParamsSchema = z.object({
