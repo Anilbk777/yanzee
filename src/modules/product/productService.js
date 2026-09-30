@@ -85,8 +85,11 @@ const getProductByIdService = async (shop, productId) => {
 
 const listProductsService = async (shop, query) => {
     logger.info("Attempting to list products");
-    const { page, limit, search, category, status, sort } = query;
-    const { products, total } = await listProducts({ shopId: shop.id, page, limit, search, category, status, sort });
+    const { page, limit, search, category, status, sort, shopId: queryShopId } = query;
+    const shopId = shop?.id || queryShopId || null;
+    const effectiveStatus = status || (shop ? undefined : "ACTIVE");
+
+    const { products, total } = await listProducts({ shopId, page, limit, search, category, status: effectiveStatus, sort });
     logger.info("Products listed successfully");
     return {
         statusCode: 200,

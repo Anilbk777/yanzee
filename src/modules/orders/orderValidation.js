@@ -31,6 +31,16 @@ export const ORDER_STATUS_TABS = ["PENDING", "ACCEPTED", "READY", "DISPATCHED", 
 // discount and total are all recomputed from the products table so a client
 // cannot dictate what it pays. shippingFee stays server-side at 0 because the
 // schema has no per-shop shipping rate yet.
+const AddressSchema = z.object({
+    recipientName: z.string().trim().min(1, "Recipient name is required").max(100),
+    recipientPhone: z.string().trim().length(10, "Recipient phone number must be 10 digits"),
+    province: z.string().trim().max(60).optional().nullable(),
+    district: z.string().trim().max(60).optional().nullable(),
+    city: z.string().trim().max(60).optional().nullable(),
+    address: z.string().trim().min(5, "Address is required").max(300),
+    note: z.string().trim().max(300).optional().nullable(),
+});
+
 export const CheckoutSchema = z.object({
     items: z
         .array(z.object({
@@ -50,17 +60,7 @@ export const CheckoutSchema = z.object({
 
     paymentMethod: z.enum(PAYMENT_METHODS, { error: "Invalid payment method" }),
 
-    shippingFee: money("Shipping fee").default(0),
-
-    address: z.object({
-        recipientName: z.string().trim().min(1, "Recipient name is required").max(100),
-        recipientPhone: z.string().trim().min(7, "Recipient phone is required").max(20),
-        province: z.string().trim().max(60).optional().nullable(),
-        district: z.string().trim().max(60).optional().nullable(),
-        city: z.string().trim().max(60).optional().nullable(),
-        address: z.string().trim().min(5, "Address is required").max(300),
-        note: z.string().trim().max(300).optional().nullable(),
-    }),
+    address: AddressSchema,
 });
 
 export const CancelOrderSchema = z.object({

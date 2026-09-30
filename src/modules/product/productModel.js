@@ -113,7 +113,7 @@ export const getProductPricing = async (shopId, productId) => {
 
 export const listProducts = async ({ shopId, page, limit, search, category, status, sort }) => {
     const where = {
-        shopId,
+        ...(shopId ? { shopId } : {}),
         ...(status ? { status } : {}),
         ...(category ? { category } : {}),
         ...(search ? { name: { contains: search, mode: "insensitive" } } : {}),

@@ -12,41 +12,41 @@ datasource db {
   provider = "postgresql"
 }
 
-
 enum UserRole {
   CUSTOMER
   SHOP_OWNER
   ADMIN
 }
- 
+
 enum Gender {
   MALE
   FEMALE
   OTHER
 }
 
-model User { 
-  id              String    @id @default(uuid())
-  email           String    @unique
-  password        String   
-  phone           String    
-  fullName        String 
-  gender          Gender    @default(MALE)
-  role            UserRole  @default(CUSTOMER)
-  country         String?
-  province        String?
-  district        String?
-  city            String?
-  address         String?
-  profileImg      String?
+model User {
+  id         String   @id @default(uuid())
+  email      String   @unique
+  password   String
+  phone      String
+  fullName   String
+  gender     Gender   @default(MALE)
+  role       UserRole @default(CUSTOMER)
+  country    String?
+  province   String?
+  district   String?
+  city       String?
+  address    String?
+  profileImg String?
 
-  
-  createdAt       DateTime  @default(now()) @map("created_at")
-  updatedAt       DateTime  @updatedAt @map("updated_at")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
 
   refreshTokens RefreshToken[]
   shop          Shop?
-  orders  Order[] 
+  orders        Order[]
+  checkouts     Checkout[]
+
   @@map("users")
 }
 
@@ -65,25 +65,24 @@ model RefreshToken {
   @@map("refresh_tokens")
 }
 
-
 model Shop {
-  id           String   @id @default(uuid())
-  ownerId      String   @unique @map("owner_id")
-  owner        User     @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  id      String @id @default(uuid())
+  ownerId String @unique @map("owner_id")
+  owner   User   @relation(fields: [ownerId], references: [id], onDelete: Cascade)
 
-  name         String  
-  image        String?               
-  description  String?  
-  contactEmail String   
-  returnPolicy String?    
+  name         String
+  image        String?
+  description  String?
+  contactEmail String
+  returnPolicy String?
 
-  createdAt    DateTime @default(now()) @map("created_at")
-  updatedAt    DateTime @updatedAt @map("updated_at")
-  products Product[]
-  orders   Order[]
+  createdAt DateTime  @default(now()) @map("created_at")
+  updatedAt DateTime  @updatedAt @map("updated_at")
+  products  Product[]
+  orders    Order[]
+
   @@map("shops")
 }
-
 
 enum ProductCategory {
   FASHION
@@ -94,13 +93,13 @@ enum ProductCategory {
   PREMIUM
   HOME_DECOR
 }
- 
+
 enum ProductStatus {
   ACTIVE
   DRAFT
   OUT_OF_STOCK
 }
- 
+
 enum Size {
   XS
   S
@@ -129,7 +128,7 @@ enum PaymentMethod {
   ESEWA
   KHALTI
 }
- 
+
 enum PaymentStatus {
   PENDING
   PAID
@@ -137,29 +136,28 @@ enum PaymentStatus {
   REFUNDED
 }
 
-
 model Product {
-  id          String          @id @default(uuid())
-  shopId      String          @map("shop_id")
-  shop        Shop            @relation(fields: [shopId], references: [id], onDelete: Cascade)
- 
+  id     String @id @default(uuid())
+  shopId String @map("shop_id")
+  shop   Shop   @relation(fields: [shopId], references: [id], onDelete: Cascade)
+
   name        String
   description String?         @db.Text
   category    ProductCategory
   status      ProductStatus   @default(DRAFT)
- 
+
   price         Decimal  @db.Decimal(12, 2) // normal price (NPR)
   discountPrice Decimal? @db.Decimal(12, 2) // optional sale price
- 
-  image   String?  // cover image URL
+
+  image   String? // cover image URL
   gallery String[] @default([]) // extra image URLs
- 
+
   variants   ProductVariant[]
   orderItems OrderItem[]
- 
+
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
- 
+
   // [shopId, createdAt] also serves plain shopId lookups, so the single-column
   // index is dropped. [shopId, status] backs the dashboard status tabs.
   @@index([shopId, createdAt])
@@ -167,23 +165,23 @@ model Product {
   @@index([category, status])
   @@map("products")
 }
- 
+
 // Stock lives HERE, because M can be sold out while L is still available.
 // Total product stock = sum of variant stocks.
 model ProductVariant {
   id        String  @id @default(uuid())
   productId String  @map("product_id")
   product   Product @relation(fields: [productId], references: [id], onDelete: Cascade)
- 
+
   size  Size
-  stock Int  @default(0)
+  stock Int     @default(0)
   sku   String?
- 
+
   orderItems OrderItem[]
- 
+
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
- 
+
   @@unique([productId, size]) // one row per size per product
   // Scoped per product: SKUs are only unique within a product, not globally.
   // Postgres treats NULLs as distinct, so products without a SKU never clash.
@@ -191,101 +189,134 @@ model ProductVariant {
   @@index([productId])
   @@map("product_variants")
 }
- 
 
- 
 // ---------- 4. Orders -------------------------------------------------------
 // ONE ORDER = ONE SHOP.
 // If a customer's cart has items from 3 shops, checkout creates 3 orders that
 // share the same `checkoutId`. That way each shop sees, accepts and ships
 // only its own order.
 model Order {
-  id          String @id @default(uuid())
-  orderNumber String @unique
-  checkoutId  String? 
- 
-  customerId String 
+  id          String   @id @default(uuid())
+  orderNumber String   @unique
+  checkoutId  String
+  checkout    Checkout @relation(fields: [checkoutId], references: [id])
+
+  customerId String
   customer   User   @relation(fields: [customerId], references: [id])
-  shopId     String 
+  shopId     String
   shop       Shop   @relation(fields: [shopId], references: [id])
- 
-  status        OrderStatus   @default(PENDING)
-  declineReason String?       
- 
+
+  status        OrderStatus @default(PENDING)
+  declineReason String?
+
   subtotal    Decimal @db.Decimal(12, 2)
   shippingFee Decimal @default(0) @db.Decimal(12, 2)
   discount    Decimal @default(0) @db.Decimal(12, 2)
   total       Decimal @db.Decimal(12, 2)
- 
-  paymentMethod PaymentMethod 
-  paymentStatus PaymentStatus @default(PENDING) 
- 
+
+  paymentMethod PaymentMethod
+  paymentStatus PaymentStatus @default(PENDING)
+
   // Delivery address SNAPSHOT (copied from user at order time, so later
   // profile edits do not change old orders)
-  recipientName  String  
-  recipientPhone String  
+  recipientName  String
+  recipientPhone String
   province       String?
   district       String?
   city           String?
   address        String
-  customerNote   String? 
- 
+  customerNote   String?
+
   // Delivery tracking
-  courierName    String? 
-  trackingNumber String? 
- 
+  courierName    String?
+  trackingNumber String?
+
   // Timestamps for each step (for the tracking timeline)
-  acceptedAt   DateTime? 
-  readyAt      DateTime? 
-  dispatchedAt DateTime? 
-  deliveredAt  DateTime? 
- 
+  acceptedAt   DateTime?
+  readyAt      DateTime?
+  dispatchedAt DateTime?
+  deliveredAt  DateTime?
+
   items   OrderItem[]
   history OrderStatusHistory[]
- 
-  createdAt DateTime @default(now()) 
-  updatedAt DateTime @updatedAt 
- 
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
   @@index([shopId, status]) // shop dashboard tabs
   @@index([customerId, createdAt]) // "My orders" page
   @@index([checkoutId])
   @@map("orders")
 }
- 
+
 model OrderItem {
-  id        String @id @default(uuid())
-  orderId   String 
-  order     Order  @relation(fields: [orderId], references: [id], onDelete: Cascade)
- 
+  id      String @id @default(uuid())
+  orderId String
+  order   Order  @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
   // Links stay optional so deleting a product never breaks old orders
-  productId String?         
+  productId String?
   product   Product?        @relation(fields: [productId], references: [id], onDelete: SetNull)
-  variantId String?         
+  variantId String?
   variant   ProductVariant? @relation(fields: [variantId], references: [id], onDelete: SetNull)
- 
+
   // SNAPSHOT of what was bought (price/name may change later)
-  productName String  
+  productName String
   image       String?
   size        Size
   unitPrice   Decimal @db.Decimal(12, 2)
   quantity    Int
   lineTotal   Decimal @db.Decimal(12, 2)
- 
+
   @@index([orderId])
   @@map("order_items")
 }
- 
+
 // Every status change is saved -> gives the customer a tracking timeline
 // ("Order placed > Accepted > Ready > On the way > Delivered")
 model OrderStatusHistory {
   id        String      @id @default(uuid())
-  orderId   String      
+  orderId   String
   order     Order       @relation(fields: [orderId], references: [id], onDelete: Cascade)
   status    OrderStatus
   note      String?
-  changedBy String?     
+  changedBy String?
   createdAt DateTime    @default(now())
- 
+
   @@index([orderId])
   @@map("order_status_history")
+}
+
+model Checkout {
+  id            String        @id @default(uuid())
+  customerId    String
+  customer      User          @relation(fields: [customerId], references: [id])
+  totalAmount   Decimal       @db.Decimal(12, 2) // what the customer pays in total
+  paymentMethod PaymentMethod
+  paymentStatus PaymentStatus @default(PENDING)
+
+  orders   Order[]
+  payments Payment[]
+
+  createdAt DateTime @default(now())
+
+  @@map("checkouts")
+}
+
+// One row per payment attempt (a customer may retry a failed eSewa payment)
+model Payment {
+  id              String        @id @default(uuid())
+  checkoutId      String
+  checkout        Checkout      @relation(fields: [checkoutId], references: [id], onDelete: Cascade)
+  method          PaymentMethod
+  status          PaymentStatus @default(PENDING)
+  amount          Decimal       @db.Decimal(12, 2)
+  gatewayRef      String?       @unique // Khalti pidx / eSewa transaction_uuid
+  transactionId   String? // final ID from the gateway
+  gatewayResponse Json?         @db.Json // raw response, for disputes
+  paidAt          DateTime?
+  createdAt       DateTime      @default(now())
+
+  @@index([checkoutId])
+  @@map("payments")
 }

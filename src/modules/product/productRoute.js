@@ -16,6 +16,7 @@ import {
     listProductsController,
     updateProductByIdController,
     deleteProductByIdController,
+    getPublicProductsController
 } from "./productController.js";
 
 const productRouter = Router();
@@ -24,6 +25,7 @@ const ownerOnly = [authenticateUser, requireOwner];
 
 productRouter.post("/", ...ownerOnly, validateRequest(CreateProductSchema), createProductController);
 productRouter.get("/", ...ownerOnly, validateQuery(ListProductsQuerySchema), listProductsController);
+productRouter.get("/public", validateQuery(ListProductsQuerySchema), getPublicProductsController);
 productRouter.get("/:productId", ...ownerOnly, validateParams(ProductIdParamsSchema), getProductByIdController);
 productRouter.patch("/:productId", ...ownerOnly, validateParams(ProductIdParamsSchema), validateRequest(UpdateProductSchema), updateProductByIdController);
 productRouter.delete("/:productId", ...ownerOnly, validateParams(ProductIdParamsSchema), deleteProductByIdController);

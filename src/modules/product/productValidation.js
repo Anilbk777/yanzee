@@ -135,5 +135,7 @@ export const ListProductsQuerySchema = z.object({
 
     sort: z.enum(["newest", "oldest", "price_asc", "price_desc", "name_asc"], {
         error: "Invalid sort option",
-    }).default("newest"),
+    }).optional(),
+
+    shopId: z.string().uuid("Invalid shop id").optional(),
 });

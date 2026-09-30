@@ -24,7 +24,7 @@ import {
 const orderRouter = Router();
 
 const customerOnly = [authenticateUser];
-const shopOnly = [authenticateUser, requireOwner, requireShop];
+const shopOnly = [authenticateUser, requireOwner];
 
 // ---- shop owner ----
 // Registered before "/:orderId" so the literal "shop" segment is not swallowed

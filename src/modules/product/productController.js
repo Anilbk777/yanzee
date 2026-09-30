@@ -32,3 +32,9 @@ export const deleteProductByIdController = asyncHandler(async (req, res) => {
     const result = await deleteProductByIdService(req.shop, req.params.productId);
     ApiResponse(res, result);
 });
+
+
+export const getPublicProductsController = asyncHandler(async (req, res) => {
+    const result = await listProductsService(null, req.validatedQuery);
+    ApiResponse(res, result);
+});
