@@ -1,6 +1,7 @@
 import ApiResponse from "../../utils/apiResponse.js";
 import asyncHandler from "../../utils/asyncHandler.js";
 import {
+    checkoutPreviewService,
     checkoutService,
     listMyOrdersService,
     getMyOrderService,
@@ -11,6 +12,11 @@ import {
 } from "./orderService.js";
 
 // ---- customer ----
+
+export const checkoutPreviewController = asyncHandler(async (req, res) => {
+    const result = await checkoutPreviewService(req.userId);
+    ApiResponse(res, result);
+});
 
 export const checkoutController = asyncHandler(async (req, res) => {
     const result = await checkoutService(req.user, req.body);

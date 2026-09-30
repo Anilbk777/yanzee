@@ -12,6 +12,7 @@ import {
     ListOrdersQuerySchema,
 } from "./orderValidation.js";
 import {
+    checkoutPreviewController,
     checkoutController,
     listMyOrdersController,
     getMyOrderController,
@@ -34,6 +35,8 @@ orderRouter.get("/shop/:orderId", ...shopOnly, validateParams(OrderIdParamsSchem
 orderRouter.patch("/shop/:orderId/status", ...shopOnly, validateParams(OrderIdParamsSchema), validateRequest(UpdateOrderStatusSchema), updateOrderStatusController);
 
 // ---- customer ----
+orderRouter.get("/checkout/preview", ...customerOnly, checkoutPreviewController);
+orderRouter.post("/checkout", ...customerOnly, validateRequest(CheckoutSchema), checkoutController);
 orderRouter.post("/", ...customerOnly, validateRequest(CheckoutSchema), checkoutController);
 orderRouter.get("/", ...customerOnly, validateQuery(ListOrdersQuerySchema), listMyOrdersController);
 orderRouter.get("/:orderId", ...customerOnly, validateParams(OrderIdParamsSchema), getMyOrderController);

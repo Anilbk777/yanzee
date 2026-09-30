@@ -42,24 +42,7 @@ const AddressSchema = z.object({
 });
 
 export const CheckoutSchema = z.object({
-    items: z
-        .array(z.object({
-            productId: z.uuid("Invalid product id"),
-            size: z.enum(["XS", "S", "M", "L", "XL", "XXL", "XXXL", "FREE_SIZE"], { error: "Invalid size" }),
-            quantity: z.coerce.number()
-                .int("Quantity must be an integer")
-                .min(1, "Quantity must be at least 1")
-                .max(99, "Quantity cannot exceed 99 per item"),
-        }))
-        .min(1, "Cart cannot be empty")
-        .max(50, "Cannot order more than 50 lines at once")
-        .refine(
-            (list) => new Set(list.map((i) => `${i.productId}:${i.size}`)).size === list.length,
-            "The same product and size appears twice"
-        ),
-
     paymentMethod: z.enum(PAYMENT_METHODS, { error: "Invalid payment method" }),
-
     address: AddressSchema,
 });
 

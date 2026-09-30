@@ -18,4 +18,5 @@ authRouter.post("/refresh", authenticateUser, refreshTokenController);
 authRouter.post("/logout", authenticateUser, logoutController);
 authRouter.get("/me", authenticateUser, meController);
 
+
 export default authRouter;

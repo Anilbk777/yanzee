@@ -2,8 +2,8 @@ import crypto from "node:crypto";
 import AppError from "../../utils/AppError.js";
 import constants from "../../utils/constants.js";
 import logger from "../../utils/logger.js";
+import { CartModel } from "../cart/cartModel.js";
 import {
-    resolveCheckoutItems,
     createCheckout,
     getOrderById,
     listOrders,
@@ -58,62 +58,143 @@ const serializeOrder = (order) => {
 // CHECKOUT
 // -----------------------------------------------------------------------------
 
-const checkoutService = async (customer, payload) => {
-    logger.info({ customerId: customer.id, lines: payload.items.length }, "Attempting checkout");
+const checkoutPreviewService = async (userId) => {
+    logger.info({ userId }, "Fetching checkout preview");
 
-    const rows = await resolveCheckoutItems(payload.items);
+    const cart = await CartModel.findOrCreateCart(userId);
+    const selectedItems = await CartModel.findSelectedItems(cart.id);
 
-    // A requested pair that produced no row is either a product that does not
-    // exist or a size this product is not stocked in. Distinguishing the two
-    // costs another round trip, so the message covers both.
-    if (rows.length !== payload.items.length) {
-        const found = new Set(rows.map((row) => `${row.productId}:${row.size}`));
-        const missing = payload.items.find((item) => !found.has(`${item.productId}:${item.size}`));
-
-        throw new AppError(
-            `Product not found or size ${missing?.size} is unavailable`,
-            constants.NotFound
-        );
+    if (selectedItems.length === 0) {
+        throw new AppError("No items selected in cart for checkout", constants.BadRequest);
     }
 
-    const byKey = new Map(rows.map((row) => [`${row.productId}:${row.size}`, row]));
+    const issues = [];
+    const shopsMap = new Map();
+    let grandSubtotal = 0;
 
-    const items = payload.items.map((line) => {
-        const row = byKey.get(`${line.productId}:${line.size}`);
+    for (const item of selectedItems) {
+        const product = item.variant.product;
+        const shop = product.shop;
+        const shopId = product.shopId;
 
-        if (row.productStatus !== "ACTIVE") {
-            throw new AppError(`"${row.productName}" is not available for purchase`, constants.BadRequest);
+        if (product.status !== "ACTIVE") {
+            issues.push(`Product "${product.name}" is no longer active`);
         }
 
-        if (row.stock < line.quantity) {
+        if (item.variant.stock < item.quantity) {
+            issues.push(
+                `Only ${item.variant.stock} units available for "${product.name}" (${item.variant.size})`
+            );
+        }
+
+        const listPrice = Number(product.price);
+        const discountPrice = product.discountPrice ? Number(product.discountPrice) : null;
+        const effectivePrice = discountPrice !== null && discountPrice > 0 ? discountPrice : listPrice;
+        const lineTotal = round2(effectivePrice * item.quantity);
+
+        grandSubtotal += lineTotal;
+
+        if (!shopsMap.has(shopId)) {
+            shopsMap.set(shopId, {
+                shopId,
+                shopName: shop ? shop.name : "Unknown Shop",
+                items: [],
+                subtotal: 0,
+            });
+        }
+
+        const group = shopsMap.get(shopId);
+        group.items.push({
+            itemId: item.id,
+            variantId: item.variantId,
+            productId: product.id,
+            productName: product.name,
+            image: product.image,
+            size: item.variant.size,
+            unitPrice: effectivePrice.toFixed(2),
+            quantity: item.quantity,
+            lineTotal: lineTotal.toFixed(2),
+        });
+        group.subtotal = round2(group.subtotal + lineTotal);
+    }
+
+    const shippingFee = 0;
+    const totalAmount = round2(grandSubtotal + shippingFee);
+
+    const shops = Array.from(shopsMap.values()).map((s) => ({
+        ...s,
+        subtotal: s.subtotal.toFixed(2),
+    }));
+
+    return {
+        statusCode: constants.Success || 200,
+        message: "Checkout preview generated successfully",
+        data: {
+            canPlaceOrder: issues.length === 0,
+            issues,
+            itemCount: selectedItems.reduce((acc, i) => acc + i.quantity, 0),
+            subtotal: round2(grandSubtotal).toFixed(2),
+            shippingFee: shippingFee.toFixed(2),
+            totalAmount: totalAmount.toFixed(2),
+            shops,
+        },
+    };
+};
+
+const checkoutService = async (user, payload) => {
+    const userId = typeof user === "object" ? user.id : user;
+    logger.info({ userId, paymentMethod: payload.paymentMethod }, "Attempting checkout from cart");
+
+    const cart = await CartModel.findOrCreateCart(userId);
+    const selectedItems = await CartModel.findSelectedItems(cart.id);
+
+    if (selectedItems.length === 0) {
+        throw new AppError("No items selected in cart for checkout", constants.BadRequest);
+    }
+
+    const variantIdsToRemove = [];
+    const processedItems = [];
+
+    for (const item of selectedItems) {
+        const product = item.variant.product;
+        const shop = product.shop;
+
+        if (product.status !== "ACTIVE") {
+            throw new AppError(`"${product.name}" is not available for purchase`, constants.BadRequest);
+        }
+
+        if (product.shop.ownerId === userId) {
+            throw new AppError("You cannot purchase products from your own shop", constants.BadRequest);
+        }
+
+        if (item.variant.stock < item.quantity) {
             throw new AppError(
-                `Only ${row.stock} left of ${row.productName} (${row.size})`,
+                `Only ${item.variant.stock} left of ${product.name} (${item.variant.size})`,
                 constants.Conflict
             );
         }
 
-        const listPrice = Number(row.price);
-        const discountPrice = row.discountPrice === null ? null : Number(row.discountPrice);
+        const listPrice = Number(product.price);
+        const discountPrice = product.discountPrice ? Number(product.discountPrice) : null;
+        const effectivePrice = discountPrice !== null && discountPrice > 0 ? discountPrice : listPrice;
 
-        return {
-            productId: row.productId,
-            variantId: row.variantId,
-            shopId: row.shopId,
-            shopName: row.shopName,
-            productName: row.productName,
-            image: row.image,
-            size: row.size,
-            stock: row.stock,
-            // The price actually charged: the sale price when there is one.
-            unitPrice: discountPrice ?? listPrice,
-            quantity: line.quantity,
-        };
-    });
+        variantIdsToRemove.push(item.variantId);
+        processedItems.push({
+            productId: product.id,
+            variantId: item.variantId,
+            shopId: product.shopId,
+            shopName: shop ? shop.name : "Unknown Shop",
+            productName: product.name,
+            image: product.image,
+            size: item.variant.size,
+            unitPrice: effectivePrice,
+            quantity: item.quantity,
+        });
+    }
 
-    // Group into one order per shop. Insertion order is kept so the response
-    // is stable and the shipping split is deterministic.
+    // Group items by shop
     const groupsByShop = new Map();
-    for (const item of items) {
+    for (const item of processedItems) {
         if (!groupsByShop.has(item.shopId)) {
             groupsByShop.set(item.shopId, { shopId: item.shopId, shopName: item.shopName, items: [] });
         }
@@ -121,11 +202,10 @@ const checkoutService = async (customer, payload) => {
     }
 
     const groups = [...groupsByShop.values()];
-    const grandSubtotal = items.reduce((sum, item) => sum + item.unitPrice * item.quantity, 0);
+    const grandSubtotal = processedItems.reduce((sum, item) => sum + item.unitPrice * item.quantity, 0);
+    const shippingFee = 0;
+    const totalAmount = round2(grandSubtotal + shippingFee);
 
-    // The customer pays one shipping fee for the whole checkout, so it is split
-    // across the per-shop orders in proportion to their subtotal. Each shop
-    // orders what it shipped, and the order totals still sum to the quote.
     for (const group of groups) {
         const groupSubtotal = group.items.reduce((sum, item) => sum + item.unitPrice * item.quantity, 0);
         group.subtotalShare = grandSubtotal > 0 ? groupSubtotal / grandSubtotal : 1 / groups.length;
@@ -133,32 +213,49 @@ const checkoutService = async (customer, payload) => {
 
     const checkoutId = crypto.randomUUID();
 
+    // Check payment gateway stubbing for digital payment methods
+    if (payload.paymentMethod === "ESEWA" || payload.paymentMethod === "KHALTI") {
+        return {
+            statusCode: constants.Success || 200,
+            message: `${payload.paymentMethod} gateway integration coming soon`,
+            data: {
+                checkoutId,
+                paymentMethod: payload.paymentMethod,
+                paymentStatus: "PENDING",
+                status: "GATEWAY_STUBBED",
+                totalAmount: totalAmount.toFixed(2),
+            },
+        };
+    }
+
     let orders;
     try {
         orders = await createCheckout({
-            customerId: customer.id,
+            customerId: userId,
+            cartId: cart.id,
             groups,
             checkoutId,
             paymentMethod: payload.paymentMethod,
             address: payload.address,
-            shippingFee: payload.shippingFee,
+            totalAmount,
+            variantIdsToRemove,
+            shippingFee,
         });
     } catch (error) {
         if (error instanceof StockConflictError) {
-            // Someone else bought the last unit between the check above and
-            // the decrement. The transaction rolled back, so nothing changed.
             throw new AppError(error.message, constants.Conflict);
         }
         throw error;
     }
 
-    logger.info({ customerId: customer.id, checkoutId, orders: orders.length }, "Checkout completed");
+    logger.info({ customerId: userId, checkoutId, orders: orders.length }, "Checkout completed");
 
     return {
-        statusCode: 201,
-        message: orders.length > 1
-            ? `Checkout split into ${orders.length} orders across ${orders.length} shops`
-            : "Order placed successfully",
+        statusCode: constants.Created || 201,
+        message:
+            orders.length > 1
+                ? `Checkout split into ${orders.length} orders across ${orders.length} shops`
+                : "Order placed successfully",
         data: {
             checkoutId,
             orderCount: orders.length,
@@ -361,6 +458,7 @@ const updateOrderStatusService = async (shop, orderId, payload) => {
 };
 
 export {
+    checkoutPreviewService,
     checkoutService,
     listMyOrdersService,
     getMyOrderService,

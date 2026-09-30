@@ -71,17 +71,26 @@ export const resolveCheckoutItems = async (items) => {
     }));
 };
 
-export const createCheckout = async ({ customerId, groups, checkoutId, paymentMethod, address, shippingFee }) => {
+export const createCheckout = async ({
+    customerId,
+    cartId,
+    groups,
+    checkoutId,
+    paymentMethod,
+    address,
+    totalAmount,
+    variantIdsToRemove = [],
+    shippingFee = 0,
+}) => {
     const orderRows = [];
     const itemRows = [];
     const historyRows = [];
 
     for (const group of groups) {
-        const subtotal = round2(group.items.reduce(
-            (sum, item) => sum + item.unitPrice * item.quantity,
-            0
-        ));
-        const orderShipping = round2(shippingFee * group.subtotalShare);
+        const subtotal = round2(
+            group.items.reduce((sum, item) => sum + item.unitPrice * item.quantity, 0)
+        );
+        const orderShipping = round2(shippingFee * (group.subtotalShare || 0));
         const orderId = crypto.randomUUID();
 
         orderRows.push({
@@ -133,45 +142,71 @@ export const createCheckout = async ({ customerId, groups, checkoutId, paymentMe
         }
     }
 
-    return await prisma.$transaction(async (tx) => {
-        for (const group of groups) {
-            for (const item of group.items) {
-                const variant = await tx.productVariant.findUnique({
-                    where: { id: item.variantId },
-                    select: { id: true, stock: true },
-                });
+    return await prisma.$transaction(
+        async (tx) => {
+            // Create Checkout header record
+            await tx.checkout.create({
+                data: {
+                    id: checkoutId,
+                    customerId,
+                    totalAmount,
+                    paymentMethod,
+                    paymentStatus: "PENDING",
+                    fromCart: true,
+                },
+            });
 
-                if (!variant || variant.stock < item.quantity) {
-                    throw new StockConflictError({
-                        productName: item.productName,
-                        size: item.size,
-                        available: variant ? variant.stock : 0,
+            // Validate stock and decrement
+            for (const group of groups) {
+                for (const item of group.items) {
+                    const variant = await tx.productVariant.findUnique({
+                        where: { id: item.variantId },
+                        select: { id: true, stock: true },
+                    });
+
+                    if (!variant || variant.stock < item.quantity) {
+                        throw new StockConflictError({
+                            productName: item.productName,
+                            size: item.size,
+                            available: variant ? variant.stock : 0,
+                        });
+                    }
+
+                    await tx.productVariant.update({
+                        where: { id: item.variantId },
+                        data: {
+                            stock: { decrement: item.quantity },
+                        },
                     });
                 }
+            }
 
-                await tx.productVariant.update({
-                    where: { id: item.variantId },
-                    data: {
-                        stock: { decrement: item.quantity },
+            await tx.order.createMany({ data: orderRows });
+            await tx.orderItem.createMany({ data: itemRows });
+            await tx.orderStatusHistory.createMany({ data: historyRows });
+
+            // Remove checked-out items from user's cart
+            if (cartId && variantIdsToRemove.length > 0) {
+                await tx.cartItem.deleteMany({
+                    where: {
+                        cartId,
+                        variantId: { in: variantIdsToRemove },
                     },
                 });
             }
-        }
 
-        await tx.order.createMany({ data: orderRows });
-        await tx.orderItem.createMany({ data: itemRows });
-        await tx.orderStatusHistory.createMany({ data: historyRows });
-
-        return orderRows.map((row) => ({
-            id: row.id,
-            orderNumber: row.orderNumber,
-            checkoutId: row.checkoutId,
-            shopId: row.shopId,
-            subtotal: row.subtotal,
-            shippingFee: row.shippingFee,
-            total: row.total,
-        }));
-    }, { timeout: 20000 });
+            return orderRows.map((row) => ({
+                id: row.id,
+                orderNumber: row.orderNumber,
+                checkoutId: row.checkoutId,
+                shopId: row.shopId,
+                subtotal: row.subtotal,
+                shippingFee: row.shippingFee,
+                total: row.total,
+            }));
+        },
+        { timeout: 20000 }
+    );
 };
 
 export const getOrderById = async (orderId) => {

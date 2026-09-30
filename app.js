@@ -10,6 +10,7 @@ import authRouter from "./src/modules/auth/authRoute.js";
 import shopRouter from "./src/modules/shop/shopRoute.js";
 import productRouter from "./src/modules/product/productRoute.js";
 import orderRouter from "./src/modules/orders/orderRoute.js";
+import cartRouter from "./src/modules/cart/cartRoute.js";
 
 const app = express();
 
@@ -30,6 +31,7 @@ app.use(`${apiPrefix}/auth`, authRouter);
 app.use(`${apiPrefix}/shops`, shopRouter);
 app.use(`${apiPrefix}/products`, productRouter);
 app.use(`${apiPrefix}/orders`, orderRouter);
+app.use(`${apiPrefix}/carts`, cartRouter);
 
 app.get("/", (req, res) => {
     res.status(200).json({ success: true, statusCode: 200, message: "welcome to yanzee backend" })

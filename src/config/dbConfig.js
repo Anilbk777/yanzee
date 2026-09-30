@@ -25,4 +25,3 @@ export const testDB = async () => {
 };
 
 export default prisma;
-export { Prisma };

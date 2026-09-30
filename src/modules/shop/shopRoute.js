@@ -22,7 +22,7 @@ const shopRouter = Router();
 
 // Order matters: Express matches in declaration order, so the owner's own
 // "/my" routes must be registered before the public "/:shopId" detail route.
-shopRouter.post("/", authenticateUser, requireOwner, validateRequest(CreateShopSchema), createShopController);
+shopRouter.post("/", authenticateUser, validateRequest(CreateShopSchema), createShopController);
 shopRouter.get("/my", authenticateUser, requireOwner, requireShop, getMyShopController);
 shopRouter.patch("/my", authenticateUser, requireOwner, requireShop, validateRequest(UpdateShopSchema), updateMyShopController);
 shopRouter.delete("/my", authenticateUser, requireOwner, requireShop, deleteMyShopController);
