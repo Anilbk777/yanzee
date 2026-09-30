@@ -83,14 +83,56 @@ const getProductByIdService = async (shop, productId) => {
     };
 };
 
-const listProductsService = async (shop, query) => {
-    logger.info("Attempting to list products");
-    const { page, limit, search, category, status, sort, shopId: queryShopId } = query;
-    const shopId = shop?.id || queryShopId || null;
-    const effectiveStatus = status || (shop ? undefined : "ACTIVE");
+const listOwnerProductsService = async (shop, query) => {
+    logger.info({ shopId: shop.id }, "Attempting to list owner products");
+    const { page, limit, search, category, status, minPrice, maxPrice, sort } = query;
 
-    const { products, total } = await listProducts({ shopId, page, limit, search, category, status: effectiveStatus, sort });
-    logger.info("Products listed successfully");
+    const { products, total } = await listProducts({
+        shopId: shop.id,
+        page,
+        limit,
+        search,
+        category,
+        status,
+        minPrice,
+        maxPrice,
+        sort,
+    });
+
+    logger.info({ shopId: shop.id }, "Owner products listed successfully");
+    return {
+        statusCode: 200,
+        message: "Products fetched successfully",
+        data: {
+            products: products.map(serializeProduct),
+            pagination: {
+                page,
+                limit,
+                total,
+                totalPages: Math.max(Math.ceil(total / limit), 1),
+            },
+        },
+    };
+};
+
+const getPublicProductsService = async (query) => {
+    logger.info("Attempting to list public products");
+    const { page, limit, search, category, status, minPrice, maxPrice, sort } = query;
+    const effectiveStatus = status || "ACTIVE";
+
+    const { products, total } = await listProducts({
+        shopId: null,
+        page,
+        limit,
+        search,
+        category,
+        status: effectiveStatus,
+        minPrice,
+        maxPrice,
+        sort,
+    });
+
+    logger.info("Public products listed successfully");
     return {
         statusCode: 200,
         message: "Products fetched successfully",
@@ -187,7 +229,8 @@ const deleteProductByIdService = async (shop, productId) => {
 export {
     createProductService,
     getProductByIdService,
-    listProductsService,
+    listOwnerProductsService,
+    getPublicProductsService,
     updateProductByIdService,
     deleteProductByIdService,
 };

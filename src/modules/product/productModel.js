@@ -111,12 +111,21 @@ export const getProductPricing = async (shopId, productId) => {
     });
 };
 
-export const listProducts = async ({ shopId, page, limit, search, category, status, sort }) => {
+export const listProducts = async ({ shopId, page, limit, search, category, status, minPrice, maxPrice, sort }) => {
+    const priceFilter = {};
+    if (minPrice !== undefined && minPrice !== null) {
+        priceFilter.gte = minPrice;
+    }
+    if (maxPrice !== undefined && maxPrice !== null) {
+        priceFilter.lte = maxPrice;
+    }
+
     const where = {
         ...(shopId ? { shopId } : {}),
         ...(status ? { status } : {}),
         ...(category ? { category } : {}),
         ...(search ? { name: { contains: search, mode: "insensitive" } } : {}),
+        ...(Object.keys(priceFilter).length > 0 ? { price: priceFilter } : {}),
     };
 
     const orderBy = SORT_MAPPING[sort] ?? SORT_MAPPING.newest;

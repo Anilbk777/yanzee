@@ -3,7 +3,8 @@ import asyncHandler from "../../utils/asyncHandler.js";
 import {
     createProductService,
     getProductByIdService,
-    listProductsService,
+    listOwnerProductsService,
+    getPublicProductsService,
     updateProductByIdService,
     deleteProductByIdService,
 } from "./productService.js";
@@ -19,7 +20,7 @@ export const getProductByIdController = asyncHandler(async (req, res) => {
 });
 
 export const listProductsController = asyncHandler(async (req, res) => {
-    const result = await listProductsService(req.shop, req.validatedQuery);
+    const result = await listOwnerProductsService(req.shop, req.validatedQuery);
     ApiResponse(res, result);
 });
 
@@ -33,8 +34,7 @@ export const deleteProductByIdController = asyncHandler(async (req, res) => {
     ApiResponse(res, result);
 });
 
-
 export const getPublicProductsController = asyncHandler(async (req, res) => {
-    const result = await listProductsService(null, req.validatedQuery);
+    const result = await getPublicProductsService(req.validatedQuery);
     ApiResponse(res, result);
 });

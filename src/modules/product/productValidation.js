@@ -133,9 +133,25 @@ export const ListProductsQuerySchema = z.object({
 
     status: z.enum(PRODUCT_STATUSES, { error: "Invalid product status" }).optional(),
 
+    minPrice: z.coerce.number()
+        .min(0, "minPrice cannot be negative")
+        .max(MAX_MONEY, "minPrice cannot exceed MAX_MONEY")
+        .optional(),
+
+    maxPrice: z.coerce.number()
+        .min(0, "maxPrice cannot be negative")
+        .max(MAX_MONEY, "maxPrice cannot exceed MAX_MONEY")
+        .optional(),
+
     sort: z.enum(["newest", "oldest", "price_asc", "price_desc", "name_asc"], {
         error: "Invalid sort option",
     }).optional(),
-
-    shopId: z.string().uuid("Invalid shop id").optional(),
+}).refine((data) => {
+    if (data.minPrice !== undefined && data.maxPrice !== undefined) {
+        return data.minPrice <= data.maxPrice;
+    }
+    return true;
+}, {
+    message: "minPrice cannot be greater than maxPrice",
+    path: ["minPrice"],
 });
