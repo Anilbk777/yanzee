@@ -8,7 +8,9 @@
   "main": "index.js",
   "scripts": {
     "dev": "nodemon index.js",
-    "start": "node index.js"
+    "start": "node index.js",
+    "build": "prisma generate",
+    "postinstall": "prisma generate"
   },
   "engines": {
     "node": "20.x"
