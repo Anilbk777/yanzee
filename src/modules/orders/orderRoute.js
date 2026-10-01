@@ -37,7 +37,7 @@ orderRouter.patch("/shop/:orderId/status", ...shopOnly, validateParams(OrderIdPa
 // ---- customer ----
 orderRouter.get("/checkout/preview", ...customerOnly, checkoutPreviewController);
 orderRouter.post("/checkout", ...customerOnly, validateRequest(CheckoutSchema), checkoutController);
-orderRouter.post("/", ...customerOnly, validateRequest(CheckoutSchema), checkoutController);
+// orderRouter.post("/", ...customerOnly, validateRequest(CheckoutSchema), checkoutController);
 orderRouter.get("/", ...customerOnly, validateQuery(ListOrdersQuerySchema), listMyOrdersController);
 orderRouter.get("/:orderId", ...customerOnly, validateParams(OrderIdParamsSchema), getMyOrderController);
 orderRouter.post("/:orderId/cancel", ...customerOnly, validateParams(OrderIdParamsSchema), validateRequest(CancelOrderSchema), cancelOrderController);

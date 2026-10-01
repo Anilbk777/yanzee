@@ -1,9 +1,13 @@
 import { z } from "zod";
+import { isValidCloudinaryImageUrl } from "../../utils/imageUpload.js"
 
 const imageUrl = z
-    .url("Image must be a valid URL")
+    .string()
     .trim()
-    .max(2048, "Image URL cannot exceed 2048 characters");
+    .max(2048, "Image URL cannot exceed 2048 characters")
+    .refine(isValidCloudinaryImageUrl, {
+        message: "Invalid image URL",
+    });
 
 export const CreateShopSchema = z.object({
     name: z

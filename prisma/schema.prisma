@@ -87,7 +87,7 @@ model Shop {
 
 enum ProductCategory {
   FASHION
-  
+  SPORTS
   KIDS
   BEAUTY
   OUTLET
