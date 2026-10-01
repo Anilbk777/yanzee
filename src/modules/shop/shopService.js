@@ -28,7 +28,7 @@ const createShopService = async (ownerId, payload) => {
         throw new AppError("You already own a shop", constants.Conflict);
     }
 
-    const { name, contactEmail, image, description, returnPolicy } = payload;
+    const { name, contactEmail, image, description, returnPolicy, contactPhone, address } = payload;
 
 
     const shop = await createShop({
@@ -38,6 +38,8 @@ const createShopService = async (ownerId, payload) => {
         image: image ?? null,
         description: description ?? null,
         returnPolicy: returnPolicy ?? null,
+        contactPhone: contactPhone ?? null,
+        address: address ?? null,
     });
 
 
@@ -62,7 +64,7 @@ const updateMyShopService = async (shop, payload) => {
     logger.info({ shopId: shop.id }, "Attempting to update shop");
 
     const data = {};
-    for (const key of ["name", "contactEmail", "image", "description", "returnPolicy"]) {
+    for (const key of ["name", "contactEmail", "image", "description", "returnPolicy", "contactPhone", "address"]) {
         if (key in payload) {
             data[key] = payload[key] ?? null;
         }

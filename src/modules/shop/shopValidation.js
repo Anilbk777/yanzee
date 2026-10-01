@@ -37,6 +37,18 @@ export const CreateShopSchema = z.object({
         .max(200, "Return policy cannot exceed 200 characters")
         .optional()
         .nullable(),
+    contactPhone: z
+        .string()
+        .trim()
+        .length(10, "Contact phone cannot exceed 15 characters")
+        .optional()
+        .nullable(),
+    address: z
+        .string()
+        .trim()
+        .max(200, "Address cannot exceed 200 characters")
+        .optional()
+        .nullable(),
 });
 
 export const UpdateShopSchema = z
@@ -68,6 +80,18 @@ export const UpdateShopSchema = z
             .string()
             .trim()
             .max(200, "Return policy cannot exceed 200 characters")
+            .optional()
+            .nullable(),
+        contactPhone: z
+            .string()
+            .trim()
+            .length(10, "Contact phone cannot exceed 10 characters")
+            .optional()
+            .nullable(),
+        address: z
+            .string()
+            .trim()
+            .max(200, "Address cannot exceed 200 characters")
             .optional()
             .nullable(),
     });

@@ -9,6 +9,8 @@ const SHOP_SELECT = {
     description: true,
     contactEmail: true,
     returnPolicy: true,
+    contactPhone: true,
+    address: true,
     createdAt: true,
     updatedAt: true,
     owner: {

@@ -8,6 +8,7 @@ import {
     imageUploadMiddleware,
 } from "../../middlewares/imageUploadMiddleware.js";
 import authenticateUser from "../../middlewares/authenticate.js";
+import requireOwner from "../../middlewares/requireOwner.js";
 import { UserRole } from "../../../generated/prisma/index.js";
 import authorizeRole from "../../middlewares/authorizeRole.js";
 
@@ -30,7 +31,7 @@ imageRouter.post(
 imageRouter.post(
     "/product/cover",
     authenticateUser,
-    authorizeRole([UserRole.SHOP_OWNER]),
+    requireOwner,
     imageUploadMiddleware,
     uploadProductImageController
 )

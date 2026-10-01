@@ -75,6 +75,8 @@ model Shop {
   image        String?
   description  String?
   contactEmail String
+  contactPhone String?
+  address      String?
   returnPolicy String?
 
   createdAt DateTime  @default(now()) @map("created_at")

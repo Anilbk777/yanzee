@@ -20,7 +20,7 @@ export const uploadShopImageController = asyncHandler(async (req, res) => {
 })
 
 export const uploadProductImageController = asyncHandler(async (req, res) => {
-    const folder = `products`;
+    const folder = `shops/${req.shop.id}/products`;
     const result = await uploadSingleImageService(req.file, folder);
     
     ApiResponse(res, result)
