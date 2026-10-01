@@ -2,10 +2,12 @@ import { Router } from "express";
 import {
     uploadUserImageController,
     uploadShopImageController,
-    uploadProductImageController
+    uploadProductImageController,
+    uploadProductGalleryController
 } from "./imageUploadController.js";
 import {
     imageUploadMiddleware,
+    imageMultipleUploadMiddleware
 } from "../../middlewares/imageUploadMiddleware.js";
 import authenticateUser from "../../middlewares/authenticate.js";
 import requireOwner from "../../middlewares/requireOwner.js";
@@ -34,6 +36,14 @@ imageRouter.post(
     requireOwner,
     imageUploadMiddleware,
     uploadProductImageController
+)
+
+imageRouter.post(
+    "/product/gallery",
+    authenticateUser,
+    requireOwner,
+    imageMultipleUploadMiddleware,
+    uploadProductGalleryController
 )
 
 export default imageRouter;

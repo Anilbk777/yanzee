@@ -12,6 +12,14 @@ export const updateUserImage = async (userId, imageUrl) => {
     return user;
 }
 
+export const getUserProfileImg = async (userId) => {
+    const user = await prisma.user.findUnique({
+        where: { id: userId },
+        select: { profileImg: true },
+    });
+    return user?.profileImg ?? null;
+}
+
 export const updateShopImage = async (shopId, imageUrl) => {
     const shop = await prisma.shop.update({
         where: {

@@ -1,5 +1,32 @@
 import prisma from "../../config/dbConfig.js";
 
+// The profile shape returned by /me and PATCH /me. Kept in one place so the two
+// endpoints can never drift, and so `password` can never leak out of a query.
+const USER_PROFILE_SELECT = {
+    id: true,
+    fullName: true,
+    email: true,
+    role: true,
+    profileImg: true,
+    phone: true,
+    gender: true,
+    address: true,
+    city: true,
+    province: true,
+    district: true,
+    country: true,
+    shop: {
+        select: {
+            id: true,
+            name: true,
+            ownerId: true,
+            // Loaded so requireOwner can hand the update flows the shop's
+            // current image without a second query.
+            image: true,
+        },
+    },
+};
+
 export const createUser = async (userData) => {
     return await prisma.user.create({
         data: userData
@@ -14,28 +41,16 @@ export const getUserByEmail = async (email) => {
 
 export const getUserById = async (userId) => {
     return await prisma.user.findUnique({
-        select: {
-            id: true,
-            fullName: true,
-            email: true,
-            role: true,
-            profileImg: true,
-            phone: true,
-            gender: true,
-            address: true,
-            city: true,
-            province: true,
-            district: true,
-            country: true,
-            shop: {
-                select: {
-                    id: true,
-                    name: true,
-                    ownerId: true,
-                },
-            },
-        },
+        select: USER_PROFILE_SELECT,
         where: { id: userId },
+    });
+};
+
+export const updateUserById = async (userId, data) => {
+    return await prisma.user.update({
+        where: { id: userId },
+        data,
+        select: USER_PROFILE_SELECT,
     });
 };
 

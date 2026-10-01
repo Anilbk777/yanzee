@@ -3,13 +3,32 @@ import constants from "../../utils/constants.js";
 import logger from "../../utils/logger.js";
 import bcrypt from "bcrypt";
 import { generateToken, hashToken } from "../../utils/tokenService.js";
+import { deleteImagesSafely } from "../../utils/imageUpload.js";
 import {
     createUser,
     getUserByEmail,
+    updateUserById,
     findSessionByToken,
     createRefreshToken,
     revokeRefreshToken,
 } from "./authModel.js";
+
+// Fields a user may change on themselves. email, password and role are
+// deliberately absent: email changes need verification, password has its own
+// endpoint, and role must never be self-assignable.
+const UPDATABLE_FIELDS = [
+    "fullName",
+    "phone",
+    "gender",
+    "country",
+    "province",
+    "district",
+    "city",
+    "address",
+    "profileImg",
+];
+
+const profileImageFolder = (userId) => `users/${userId}`;
 
 
 const registerUser = async (userData) => {
@@ -154,10 +173,53 @@ const meService = async (user) => {
     }
 }
 
+const updateMeService = async (user, payload) => {
+    logger.info({ userId: user.id }, "Attempting to update user profile");
+
+    // Only the keys actually present are patched, so an omitted field keeps its
+    // stored value and an explicit null clears it. fullName and phone are
+    // NOT NULL in the database, and UpdateUserSchema rejects a null for either.
+    const data = {};
+    for (const key of UPDATABLE_FIELDS) {
+        if (key in payload) {
+            data[key] = payload[key] ?? null;
+        }
+    }
+
+    let updatedUser;
+    try {
+        updatedUser = await updateUserById(user.id, data);
+    } catch (error) {
+        if (error?.code === "P2025") {
+            throw new AppError("User not found", constants.NotFound);
+        }
+        throw error;
+    }
+
+    // `profileImg: null` removes the picture and destroys the asset; a new URL
+    // replaces it and destroys the old one; omitting the field leaves both
+    // untouched. Runs after the write and never throws, so a Cloudinary failure
+    // cannot undo a committed update.
+    await deleteImagesSafely({
+        currentUrls: [user.profileImg],
+        nextUrls: [updatedUser.profileImg],
+        allowedPrefix: profileImageFolder(user.id),
+    });
+
+    logger.info({ userId: user.id }, "User profile updated successfully");
+
+    return {
+        statusCode: 200,
+        message: "User profile updated successfully",
+        data: updatedUser,
+    }
+}
+
 export {
     registerUser,
     loginUser,
     refreshTokenService,
     logoutService,
-    meService
+    meService,
+    updateMeService
 }

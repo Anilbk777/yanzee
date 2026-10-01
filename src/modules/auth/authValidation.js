@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { isValidCloudinaryImageUrl } from "../../utils/imageUpload.js";
 
 const genderEnum = z.enum(["MALE", "FEMALE", "OTHER"]);
 const roleEnum = z.enum(["CUSTOMER", "SHOP_OWNER"]);
@@ -49,3 +50,51 @@ export const LoginUserSchema = z.object({
         .string()
         .trim()
 });
+
+const shortText = (label, max) => z
+    .string()
+    .trim()
+    .max(max, `${label} cannot exceed ${max} characters`);
+
+// Anchored to our own Cloudinary cloud so the asset can always be cleaned up
+// when it is later replaced or removed. `.nullable()` is how a client says
+// "delete my profile picture" by sending null.
+const profileImage = z
+    .string()
+    .trim()
+    .max(2048, "Image URL cannot exceed 2048 characters")
+    .refine(isValidCloudinaryImageUrl, { message: "Invalid image URL" });
+
+// .strict() so a body carrying `email`, `role` or `password` fails loudly
+// instead of being silently dropped. Changing the password goes through its own
+// endpoint, which can verify the current password first.
+//
+// fullName, phone and gender are .optional() but NOT .nullable(): they are
+// NOT NULL in the database, so omitting them keeps the stored value while
+// sending null is rejected with a clear message rather than blowing up on a
+// database constraint later.
+export const UpdateUserSchema = z
+    .object({
+        fullName: z
+            .string()
+            .trim()
+            .min(2, "Name must be at least 2 characters")
+            .max(50, "Name cannot exceed 50 characters")
+            .optional(),
+
+        phone: z.string().trim().length(10, "Phone must be exactly 10 characters").optional(),
+
+        gender: genderEnum.optional(),
+
+        country: shortText("Country", 100).optional().nullable(),
+        province: shortText("Province", 100).optional().nullable(),
+        district: shortText("District", 100).optional().nullable(),
+        city: shortText("City", 100).optional().nullable(),
+        address: shortText("Address", 200).optional().nullable(),
+
+        profileImg: profileImage.optional().nullable(),
+    })
+    .strict()
+    .refine((data) => Object.keys(data).length > 0, {
+        message: "At least one field is required to update",
+    });

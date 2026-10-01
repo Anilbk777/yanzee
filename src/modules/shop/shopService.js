@@ -1,6 +1,7 @@
 import AppError from "../../utils/AppError.js";
 import constants from "../../utils/constants.js";
 import logger from "../../utils/logger.js";
+import { deleteImagesSafely,deleteFromCloudinary } from "../../utils/imageUpload.js";
 import {
     createShop,
     getShopByOwnerId,
@@ -8,12 +9,18 @@ import {
     updateShopById,
     deleteShopById,
     listShops,
-    getShopByName
+    getShopByName,
+    getShopProductImageUrls,
+    clearOrderItemImagesForShop
 } from "./shopModel.js";
 
 const isUniqueViolation = (error) => error?.code === "P2002";
 const isMissingRecord = (error) => error?.code === "P2025";
 const isForeignKeyViolation = (error) => error?.code === "P2003";
+
+// Both are this owner's: images uploaded straight into the shop folder, and
+// images uploaded before the shop existed, which wait in a per-user folder.
+const ownedImageFolders = (shop) => [`shops/${shop.id}`, `shops/pending/${shop.ownerId}`];
 
 const createShopService = async (ownerId, payload) => {
     logger.info({ ownerId }, "Attempting to create shop");
@@ -30,18 +37,34 @@ const createShopService = async (ownerId, payload) => {
 
     const { name, contactEmail, image, description, returnPolicy, contactPhone, address } = payload;
 
+    let shop;
+    try {
+        shop = await createShop({
+            ownerId,
+            name,
+            contactEmail,
+            image: image ?? null,
+            description: description ?? null,
+            returnPolicy: returnPolicy ?? null,
+            contactPhone: contactPhone ?? null,
+            address: address ?? null,
+        });
+    } catch (error) {
+        // The client uploaded the image before creating the shop. If the row is
+        // never written it is unreferenced, so it is destroyed rather than
+        // orphaned. The shop id does not exist yet, so only the owner's own
+        // pending folder is a valid source.
+        await deleteImagesSafely({
+            currentUrls: [image],
+            nextUrls: [],
+            allowedPrefix: [`shops/pending/${ownerId}`],
+        });
 
-    const shop = await createShop({
-        ownerId,
-        name,
-        contactEmail,
-        image: image ?? null,
-        description: description ?? null,
-        returnPolicy: returnPolicy ?? null,
-        contactPhone: contactPhone ?? null,
-        address: address ?? null,
-    });
-
+        if (isUniqueViolation(error)) {
+            throw new AppError("Shop name already exists", constants.Conflict);
+        }
+        throw error;
+    }
 
     logger.info({ shopId: shop.id, ownerId }, "Shop created successfully");
 
@@ -70,7 +93,39 @@ const updateMyShopService = async (shop, payload) => {
         }
     }
 
-    const updatedShop = await updateShopById(shop.id, data);
+    // The shop row loaded by requireShop already carries the current image, so
+    // the asset being replaced is known without another read.
+    if (data.name && data.name !== shop.name) {
+        await getShopByName(data.name, shop.id);
+    }
+
+    if (data.image === null && shop.image != null) {
+        // If the user explicitly sets the image to null, delete the old one.
+        await deleteFromCloudinary(shop.image);
+    }
+
+    let updatedShop;
+    try {
+        updatedShop = await updateShopById(shop.id, data);
+    } catch (error) {
+        if (isUniqueViolation(error)) {
+            throw new AppError("Shop name already exists", constants.Conflict);
+        }
+        if (isMissingRecord(error)) {
+            throw new AppError("Shop not found", constants.NotFound);
+        }
+        throw error;
+    }
+
+    // `image: null` removes the image and destroys the asset; a different URL
+    // replaces it and destroys the old one; omitting the field leaves both
+    // untouched. Runs after the write and never throws, so a Cloudinary failure
+    // cannot undo a committed update.
+    await deleteImagesSafely({
+        currentUrls: [shop.image],
+        nextUrls: [updatedShop.image],
+        allowedPrefix: ownedImageFolders(shop),
+    });
 
     logger.info({ shopId: updatedShop.id }, "Shop updated successfully");
 
@@ -83,6 +138,15 @@ const updateMyShopService = async (shop, payload) => {
 
 const deleteMyShopService = async (shop) => {
     logger.info({ shopId: shop.id }, "Attempting to delete shop");
+
+    // Products cascade away with the shop, so every image they reference has to
+    // be collected while the rows still exist.
+    const productImages = await getShopProductImageUrls(shop.id);
+
+    // Also before the delete: removing the shop cascades its products, which
+    // nulls order_items.product_id, and the relation filter would then match
+    // nothing.
+    await clearOrderItemImagesForShop(shop.id);
 
     try {
         await deleteShopById(shop.id);
@@ -97,6 +161,12 @@ const deleteMyShopService = async (shop) => {
         }
         throw error;
     }
+
+    await deleteImagesSafely({
+        currentUrls: [shop.image, ...productImages],
+        nextUrls: [],
+        allowedPrefix: ownedImageFolders(shop),
+    });
 
     logger.info({ shopId: shop.id }, "Shop deleted successfully");
 

@@ -1,4 +1,8 @@
 import { z } from "zod";
+import { isValidCloudinaryImageUrl } from "../../utils/imageUpload.js";
+import constants from "../../utils/constants.js";
+
+const { maxGalleryImages } = constants.IMAGE_LIMITS;
 
 export const PRODUCT_CATEGORIES = [
     "FASHION",
@@ -11,8 +15,8 @@ export const PRODUCT_CATEGORIES = [
 ];
 
 export const PRODUCT_STATUSES = ["ACTIVE", "DRAFT", "OUT_OF_STOCK"];
-
-export const SIZES = ["XS", "S", "M", "L", "XL", "XXL", "XXXL", "FREE_SIZE"];
+export const PRODUCT_AUDIENCES = ["MEN", "WOMEN", "UNISEX", "BOY", "GIRL", "KIDS_UNISEX"];
+// export const SIZES = ["XS", "S", "M", "L", "XL", "XXL", "XXXL", "FREE_SIZE"];
 
 const MAX_MONEY = 9999999999.99; // Decimal(12,2) ceiling
 
@@ -25,17 +29,23 @@ const money = (label) => z
         `${label} can have at most 2 decimal places`
     );
 
+// Anchored to our own Cloudinary cloud, matching the shop validator. A generic
+// z.url() would let clients store an image we can never clean up from Cloudinary
+// when it is later replaced or removed. `.nullable()` is what lets a client say
+// "delete my image" by sending null.
 const imageUrl = z
-    .url("Image must be a valid URL")
-    .max(2048, "Image URL cannot exceed 2048 characters");
+    .string()
+    .trim()
+    .max(2048, "Image URL cannot exceed 2048 characters")
+    .refine(isValidCloudinaryImageUrl, { message: "Invalid image URL" });
 
 const gallery = z
     .array(imageUrl)
-    .max(10, "Gallery cannot have more than 10 images")
+    .max(maxGalleryImages, `Gallery cannot have more than ${maxGalleryImages} images`)
     .default([]);
 
 const variant = z.object({
-    size: z.enum(SIZES, { error: "Invalid size" }),
+    size: z.string().trim().min(1, "Size cannot be empty").max(20, "Size cannot exceed 20 characters").regex(/^[A-Za-z0-9 .\-\/]+$/, "Size can only contain letters, numbers, space, - . /"),
     stock: z.coerce.number()
         .int("Stock must be an integer")
         .min(0, "Stock cannot be negative")
@@ -60,6 +70,8 @@ const commonFields = {
     category: z.enum(PRODUCT_CATEGORIES, { error: "Invalid product category" }),
 
     status: z.enum(PRODUCT_STATUSES, { error: "Invalid product status" }).default("DRAFT"),
+
+    audience: z.enum(PRODUCT_AUDIENCES, { error: "Invalid product audience" }),
 
     price: money("Price"),
 
@@ -99,11 +111,12 @@ export const UpdateProductSchema = z
         name: updateFields.name.optional(),
         category: updateFields.category.optional(),
         status: updateFields.status,
+        audience: updateFields.audience.optional(),
         price: updateFields.price.optional(),
         discountPrice: updateFields.discountPrice,
         image: updateFields.image,
         description: updateFields.description,
-        gallery: z.array(imageUrl).max(10, "Gallery cannot have more than 10 images").optional(),
+        gallery: z.array(imageUrl).max(maxGalleryImages, `Gallery cannot have more than ${maxGalleryImages} images`).optional(),
         variants: variants.optional(),
     })
     .refine((data) => Object.keys(data).length > 0, {
@@ -146,6 +159,9 @@ export const ListProductsQuerySchema = z.object({
     sort: z.enum(["newest", "oldest", "price_asc", "price_desc", "name_asc"], {
         error: "Invalid sort option",
     }).optional(),
+
+    audience: z.enum(PRODUCT_AUDIENCES, { error: "Invalid product audience" }).optional(),
+
 }).refine((data) => {
     if (data.minPrice !== undefined && data.maxPrice !== undefined) {
         return data.minPrice <= data.maxPrice;

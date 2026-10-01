@@ -85,11 +85,34 @@ export const listShops = async ({ page, limit, search }) => {
 };
 
 
-export const getShopByName = async (name) => {
+export const getShopByName = async (name, excludeShopId = null) => {
     const shop = await prisma.shop.findFirst({
-        where: { name },
+        where: {
+            name,
+            ...(excludeShopId ? { id: { not: excludeShopId } } : {}),
+        },
     });
     if (shop) {
         throw new AppError("Shop name already exists", constants.Conflict);
     }
 }
+
+// Deleting a shop cascades its products away, so their Cloudinary assets have
+// to be collected before the rows disappear.
+export const getShopProductImageUrls = async (shopId) => {
+    const products = await prisma.product.findMany({
+        where: { shopId },
+        select: { image: true, gallery: true },
+    });
+
+    return products.flatMap((product) => [product.image, ...(product.gallery ?? [])].filter(Boolean));
+};
+
+// Order items outlive the product they were bought from (onDelete: SetNull), so
+// their image snapshots are cleared when a shop's products go away.
+export const clearOrderItemImagesForShop = async (shopId) => {
+    return await prisma.orderItem.updateMany({
+        where: { product: { shopId } },
+        data: { image: null },
+    });
+};

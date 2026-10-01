@@ -6,7 +6,8 @@ import {
     loginUser,
     refreshTokenService,
     logoutService,
-    meService
+    meService,
+    updateMeService
 } from "./authService.js";
 
 export const registerUserController = asyncHandler(async (req, res) => {
@@ -36,5 +37,10 @@ export const logoutController = asyncHandler(async (req, res) => {
 
 export const meController = asyncHandler(async (req, res) => {
     const result = await meService(req.user);
+    ApiResponse(res, result);
+})
+
+export const updateMeController = asyncHandler(async (req, res) => {
+    const result = await updateMeService(req.user, req.body);
     ApiResponse(res, result);
 })
