@@ -102,7 +102,7 @@ export const clearOrderItemImagesForProduct = async (productId) => {
     });
 };
 
-export const listProducts = async ({ shopId, page, limit, search, category, status, minPrice, maxPrice, sort }) => {
+export const listProducts = async ({ shopId, page, limit, search, category, status, minPrice, maxPrice, sort, audience }) => {
     const priceFilter = {};
     if (minPrice !== undefined && minPrice !== null) {
         priceFilter.gte = minPrice;
@@ -115,6 +115,7 @@ export const listProducts = async ({ shopId, page, limit, search, category, stat
         ...(shopId ? { shopId } : {}),
         ...(status ? { status } : {}),
         ...(category ? { category } : {}),
+        ...(audience ? { audience } : {}),
         ...(search ? { name: { contains: search, mode: "insensitive" } } : {}),
         ...(Object.keys(priceFilter).length > 0 ? { price: priceFilter } : {}),
     };

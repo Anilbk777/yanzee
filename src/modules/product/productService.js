@@ -120,7 +120,7 @@ const listOwnerProductsService = async (shop, query) => {
 
 const getPublicProductsService = async (query) => {
     logger.info("Attempting to list public products");
-    const { page, limit, search, category, status, minPrice, maxPrice, sort } = query;
+    const { page, limit, search, category, status, minPrice, maxPrice, sort, audience } = query;
     const effectiveStatus = status || "ACTIVE";
 
     const { products, total } = await listProducts({
@@ -133,6 +133,7 @@ const getPublicProductsService = async (query) => {
         minPrice,
         maxPrice,
         sort,
+        audience
     });
 
     logger.info("Public products listed successfully");
