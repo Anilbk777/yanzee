@@ -61,7 +61,7 @@ const validateRealFileType = async (buffer) => {
   return fileTypeResult.mime;
 };
 
-const uploadBufferToCloudinary = (buffer, folder) => {
+const uploadBufferToCloudinary = async (buffer, folder) => {
   return new Promise((resolve, reject) => {
     const uploadStream = cloudinary.uploader.upload_stream(
       {

@@ -8,6 +8,8 @@ import constants from "../../utils/constants.js";
 import logger from "../../utils/logger.js";
 import { updateUserImage, getUserProfileImg } from "./imageUploadModel.js";
 
+const { maxImagesPerUpload } = constants.IMAGE_LIMITS;
+
 const validateAllFiles = async (files) => {
   for (const file of files) {
     await validateRealFileType(file.buffer);
@@ -82,7 +84,7 @@ const uploadMultipleImagesService = async (files, folder) => {
   }
 
   await validateAllFiles(files);
-  const cloudinaryResults = await uploadAllOrRollback(files, folder);
+  const cloudinaryResults = await Promise.all(files.map((file) => uploadBufferToCloudinary(file.buffer, folder)));
 
   logger.info("Upload multiple images completed");
   return {
