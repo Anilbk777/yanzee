@@ -14,24 +14,16 @@ export const uploadUserImageController = asyncHandler(async (req, res) => {
 })
 
 export const uploadShopImageController = asyncHandler(async (req, res) => {
-    // A shop image can legitimately be uploaded BEFORE the shop exists (the
-    // create call accepts an image URL), so it goes to a per-user pending
-    // folder in that case and is promoted to shops/<shopId> once there is one.
-    // Both folders are recognised by the shop cleanup as belonging to this
-    // owner, which keeps cross-tenant deletion impossible either way.
-    const folder = req.user.shop
-        ? `shops/${req.user.shop.id}`
-        : `shops/pending/${req.userId}`;
 
+    const folder = `shops`;
     const result = await uploadSingleImageService(req.file, folder);
-
     ApiResponse(res, result)
 })
 
 export const uploadProductImageController = asyncHandler(async (req, res) => {
     const folder = `shops/${req.shop.id}/products`;
     const result = await uploadSingleImageService(req.file, folder);
-    
+
     ApiResponse(res, result)
 })
 

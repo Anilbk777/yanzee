@@ -1,7 +1,7 @@
 import AppError from "../../utils/AppError.js";
 import constants from "../../utils/constants.js";
 import logger from "../../utils/logger.js";
-import { deleteImagesSafely,deleteFromCloudinary } from "../../utils/imageUpload.js";
+import { deleteFromCloudinary } from "../../utils/imageUpload.js";
 import {
     createShop,
     getShopByOwnerId,
@@ -50,15 +50,6 @@ const createShopService = async (ownerId, payload) => {
             address: address ?? null,
         });
     } catch (error) {
-        // The client uploaded the image before creating the shop. If the row is
-        // never written it is unreferenced, so it is destroyed rather than
-        // orphaned. The shop id does not exist yet, so only the owner's own
-        // pending folder is a valid source.
-        await deleteImagesSafely({
-            currentUrls: [image],
-            nextUrls: [],
-            allowedPrefix: [`shops/pending/${ownerId}`],
-        });
 
         if (isUniqueViolation(error)) {
             throw new AppError("Shop name already exists", constants.Conflict);
@@ -93,16 +84,14 @@ const updateMyShopService = async (shop, payload) => {
         }
     }
 
-    // The shop row loaded by requireShop already carries the current image, so
-    // the asset being replaced is known without another read.
     if (data.name && data.name !== shop.name) {
         await getShopByName(data.name, shop.id);
     }
 
-    if (data.image === null && shop.image != null) {
-        // If the user explicitly sets the image to null, delete the old one.
-        await deleteFromCloudinary(shop.image);
-    }
+    // Only act on the image if the client explicitly sent the field.
+    const imageFieldTouched = "image" in payload;
+    const oldImageUrl = shop.image;
+    const imageWillChange = imageFieldTouched && data.image !== oldImageUrl;
 
     let updatedShop;
     try {
@@ -117,15 +106,10 @@ const updateMyShopService = async (shop, payload) => {
         throw error;
     }
 
-    // `image: null` removes the image and destroys the asset; a different URL
-    // replaces it and destroys the old one; omitting the field leaves both
-    // untouched. Runs after the write and never throws, so a Cloudinary failure
-    // cannot undo a committed update.
-    await deleteImagesSafely({
-        currentUrls: [shop.image],
-        nextUrls: [updatedShop.image],
-        allowedPrefix: ownedImageFolders(shop),
-    });
+    // DB update succeeded — now it's safe to clean up the old Cloudinary asset.
+    if (imageWillChange && oldImageUrl) {
+        await deleteFromCloudinary(oldImageUrl);
+    }
 
     logger.info({ shopId: updatedShop.id }, "Shop updated successfully");
 
@@ -141,12 +125,7 @@ const deleteMyShopService = async (shop) => {
 
     // Products cascade away with the shop, so every image they reference has to
     // be collected while the rows still exist.
-    const productImages = await getShopProductImageUrls(shop.id);
 
-    // Also before the delete: removing the shop cascades its products, which
-    // nulls order_items.product_id, and the relation filter would then match
-    // nothing.
-    await clearOrderItemImagesForShop(shop.id);
 
     try {
         await deleteShopById(shop.id);
@@ -161,12 +140,13 @@ const deleteMyShopService = async (shop) => {
         }
         throw error;
     }
-
-    await deleteImagesSafely({
-        currentUrls: [shop.image, ...productImages],
-        nextUrls: [],
-        allowedPrefix: ownedImageFolders(shop),
-    });
+    
+    if (shop.image) {
+        await Promise.all([
+            deleteFromCloudinary(shop.image),
+            clearOrderItemImagesForShop(shop.id),
+        ])
+    }
 
     logger.info({ shopId: shop.id }, "Shop deleted successfully");
 
@@ -179,7 +159,7 @@ const deleteMyShopService = async (shop) => {
 const getShopByIdService = async (shopId) => {
     logger.info({ shopId }, "Attempting to get shop by ID");
     const shop = await getShopById(shopId);
-    
+
 
     if (!shop) {
         throw new AppError("Shop not found", constants.NotFound);

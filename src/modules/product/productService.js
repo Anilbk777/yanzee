@@ -1,7 +1,7 @@
 import AppError from "../../utils/AppError.js";
 import constants from "../../utils/constants.js";
 import logger from "../../utils/logger.js";
-import { deleteImagesSafely, deleteFromCloudinary, } from "../../utils/imageUpload.js";
+import { deleteFromCloudinary, deleteCloudinaryImages, diffImages } from "../../utils/imageUpload.js";
 import {
     createProduct,
     getProductById,
@@ -16,17 +16,10 @@ import {
 const isUniqueViolation = (error) => error?.code === "P2002";
 const isMissingRecord = (error) => error?.code === "P2025";
 
-// Covers and gallery images are uploaded into this shop's own Cloudinary folder
-// before the product row exists. Passing it as the allowed prefix means a
-// cleanup can never reach an asset belonging to another shop.
 const productImageFolder = (shopId) => `shops/${shopId}/products`;
 
 const storedImageUrls = ({ image, gallery }) => [image, ...(gallery ?? [])].filter(Boolean);
 
-// Prisma returns Decimal instances, which serialise to JSON strings
-// ("1200.00"). Products are read for display, so plain numbers are cheaper for
-// the client. totalStock is derived here from the variants already fetched,
-// costing no extra query.
 const serializeProduct = (product) => {
     const { price, discountPrice, variants, ...rest } = product;
 
@@ -64,15 +57,6 @@ const createProductService = async (shop, payload) => {
             variants,
         });
     } catch (error) {
-        // The client uploaded these images before calling create. If the row is
-        // never written, they are unreferenced, so they are destroyed instead of
-        // being left behind in Cloudinary.
-        await deleteImagesSafely({
-            currentUrls: storedImageUrls({ image, gallery }),
-            nextUrls: [],
-            allowedPrefix: productImageFolder(shop.id),
-        });
-
         if (isUniqueViolation(error)) {
             throw new AppError("Two variants cannot share the same SKU", constants.Conflict);
         }
@@ -191,19 +175,22 @@ const updateProductByIdService = async (shop, productId, payload) => {
         throw new AppError("Discount price cannot be greater than price", constants.BadRequest);
     }
 
+    let tasks = [];
     if (payload.image === null && existing.image != null) {
-        await deleteFromCloudinary(existing.image);
+        tasks.push(deleteFromCloudinary(existing.image));
+        tasks.push(clearOrderItemImagesForProduct(productId));
     }
 
-    if (payload.gallery && Array.isArray(payload.gallery)) {
-        // Clean up gallery images that are being removed
-        const existingUrls = existing.gallery || [];
-        const nextUrls = payload.gallery;
-        await deleteImagesSafely({
-            currentUrls: existingUrls,
-            nextUrls: nextUrls,
-            allowedPrefix: productImageFolder(shop.id),
-        });
+    if (payload.gallery) {
+        const currentImages = existing.gallery || [];
+        const { toDelete } = diffImages(currentImages, payload.gallery);
+        if (toDelete.length > 0) {
+            tasks.push(deleteCloudinaryImages(toDelete));
+        }
+    }
+
+    if (tasks.length > 0) {
+        await Promise.all(tasks);
     }
 
     let product;
@@ -218,25 +205,6 @@ const updateProductByIdService = async (shop, productId, payload) => {
         }
         throw error;
     }
-
-    // Deleting the cover outright means the order snapshots that reference it
-    // become dead URLs, so they are cleared in the same flow.
-    if (payload.image === null) {
-        await clearOrderItemImagesForProduct(productId);
-    }
-
-    // Whatever the update stopped referencing (replaced cover, shortened
-    // gallery) is destroyed from Cloudinary. Omitted fields keep their stored
-    // value, so they are included in `nextUrls` and therefore never deleted.
-    await deleteImagesSafely({
-        currentUrls: storedImageUrls(existing),
-        nextUrls: [
-            payload.image !== undefined ? product.image : existing.image,
-            ...(payload.gallery !== undefined ? product.gallery : existing.gallery),
-        ].filter(Boolean),
-        allowedPrefix: productImageFolder(shop.id),
-    });
-
     logger.info({ productId: product.id }, "Product updated successfully");
 
     return {
@@ -254,11 +222,17 @@ const deleteProductByIdService = async (shop, productId) => {
         throw new AppError("Product not found", constants.NotFound);
     }
 
-    // Order items survive the product (onDelete: SetNull) but their image
-    // snapshot pointed at an asset that no longer exists. This has to run
-    // BEFORE the delete: once the product row is gone the database nulls
-    // order_items.product_id, and the `productId` filter would match nothing.
-    await clearOrderItemImagesForProduct(productId);
+    let tasks = [];
+    if (existing.image) {
+        tasks.push(deleteFromCloudinary(existing.image));
+    }
+    if (existing.gallery) {
+        const { toDelete } = diffImages(existing.gallery, []);
+        if (toDelete.length > 0) {
+            tasks.push(deleteCloudinaryImages(toDelete));
+        }
+    }
+    tasks.push(clearOrderItemImagesForProduct(productId));
 
     let deleted;
     try {
@@ -273,12 +247,9 @@ const deleteProductByIdService = async (shop, productId) => {
     if (!deleted) {
         throw new AppError("Product not found", constants.NotFound);
     }
-
-    await deleteImagesSafely({
-        currentUrls: storedImageUrls(existing),
-        nextUrls: [],
-        allowedPrefix: productImageFolder(shop.id),
-    });
+    if (tasks.length > 0) {
+        await Promise.all(tasks);
+    }
 
     logger.info({ productId }, "Product deleted successfully");
 

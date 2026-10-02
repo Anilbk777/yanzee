@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { isValidCloudinaryImageUrl } from "../../utils/imageUpload.js";
+import { isValidCloudinaryImageUrl, validateImageUrls } from "../../utils/imageUpload.js";
 import constants from "../../utils/constants.js";
 
 const { maxGalleryImages } = constants.IMAGE_LIMITS;
@@ -42,7 +42,10 @@ const imageUrl = z
 const gallery = z
     .array(imageUrl)
     .max(maxGalleryImages, `Gallery cannot have more than ${maxGalleryImages} images`)
-    .default([]);
+    .default([]).refine(validateImageUrls, {
+        message: "Invalid image URL",
+        code: "invalid_image_url",
+    });
 
 const variant = z.object({
     size: z.string().trim().min(1, "Size cannot be empty").max(20, "Size cannot exceed 20 characters").regex(/^[A-Za-z0-9 .\-\/]+$/, "Size can only contain letters, numbers, space, - . /"),

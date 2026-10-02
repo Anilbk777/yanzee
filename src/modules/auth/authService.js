@@ -3,7 +3,6 @@ import constants from "../../utils/constants.js";
 import logger from "../../utils/logger.js";
 import bcrypt from "bcrypt";
 import { generateToken, hashToken } from "../../utils/tokenService.js";
-import { deleteImagesSafely } from "../../utils/imageUpload.js";
 import {
     createUser,
     getUserByEmail,
@@ -195,16 +194,6 @@ const updateMeService = async (user, payload) => {
         }
         throw error;
     }
-
-    // `profileImg: null` removes the picture and destroys the asset; a new URL
-    // replaces it and destroys the old one; omitting the field leaves both
-    // untouched. Runs after the write and never throws, so a Cloudinary failure
-    // cannot undo a committed update.
-    await deleteImagesSafely({
-        currentUrls: [user.profileImg],
-        nextUrls: [updatedUser.profileImg],
-        allowedPrefix: profileImageFolder(user.id),
-    });
 
     logger.info({ userId: user.id }, "User profile updated successfully");
 
