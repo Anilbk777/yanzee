@@ -12,22 +12,6 @@ import {
     revokeRefreshToken,
 } from "./authModel.js";
 
-// Fields a user may change on themselves. email, password and role are
-// deliberately absent: email changes need verification, password has its own
-// endpoint, and role must never be self-assignable.
-const UPDATABLE_FIELDS = [
-    "fullName",
-    "phone",
-    "gender",
-    "country",
-    "province",
-    "district",
-    "city",
-    "address",
-    "profileImg",
-];
-
-const profileImageFolder = (userId) => `users/${userId}`;
 
 
 const registerUser = async (userData) => {
@@ -49,13 +33,7 @@ const registerUser = async (userData) => {
     return {
         statusCode: 201,
         message: "User registered successfully",
-        data: {
-            id: user.id,
-            fullName: user.fullName,
-            email: user.email,
-            role: user.role,
-            createdAt: user.createdAt,
-        }
+        data: user
     }
 }
 
@@ -93,7 +71,6 @@ const loginUser = async (body) => {
                 fullName: existingUser.fullName,
                 email: existingUser.email,
                 phone: existingUser.phone,
-                profileImg: existingUser.profileImg,
                 role: existingUser.role
             }
         }
@@ -172,37 +149,7 @@ const meService = async (user) => {
     }
 }
 
-const updateMeService = async (user, payload) => {
-    logger.info({ userId: user.id }, "Attempting to update user profile");
 
-    // Only the keys actually present are patched, so an omitted field keeps its
-    // stored value and an explicit null clears it. fullName and phone are
-    // NOT NULL in the database, and UpdateUserSchema rejects a null for either.
-    const data = {};
-    for (const key of UPDATABLE_FIELDS) {
-        if (key in payload) {
-            data[key] = payload[key] ?? null;
-        }
-    }
-
-    let updatedUser;
-    try {
-        updatedUser = await updateUserById(user.id, data);
-    } catch (error) {
-        if (error?.code === "P2025") {
-            throw new AppError("User not found", constants.NotFound);
-        }
-        throw error;
-    }
-
-    logger.info({ userId: user.id }, "User profile updated successfully");
-
-    return {
-        statusCode: 200,
-        message: "User profile updated successfully",
-        data: updatedUser,
-    }
-}
 
 export {
     registerUser,
@@ -210,5 +157,4 @@ export {
     refreshTokenService,
     logoutService,
     meService,
-    updateMeService
 }

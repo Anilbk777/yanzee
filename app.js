@@ -7,10 +7,11 @@ import helmet from "helmet";
 import AppError from "./src/utils/AppError.js";
 import constants from "./src/utils/constants.js";
 import authRouter from "./src/modules/auth/authRoute.js";
-import shopRouter from "./src/modules/shop/shopRoute.js";
-import productRouter from "./src/modules/product/productRoute.js";
-import orderRouter from "./src/modules/orders/orderRoute.js";
-import cartRouter from "./src/modules/cart/cartRoute.js";
+import storeRouter from "./src/modules/store/storeRoute.js";
+import categoryRouter from "./src/modules/category/categoryRoute.js";
+// import productRouter from "./src/modules/product/productRoute.js";
+// import orderRouter from "./src/modules/orders/orderRoute.js";
+// import cartRouter from "./src/modules/cart/cartRoute.js";
 import imageRouter from "./src/modules/imageUpload/imageUploadRoute.js"
 
 const app = express();
@@ -29,10 +30,11 @@ const apiPrefix = "/api/v1";
 
 // API Routes
 app.use(`${apiPrefix}/auth`, authRouter);
-app.use(`${apiPrefix}/shops`, shopRouter);
-app.use(`${apiPrefix}/products`, productRouter);
-app.use(`${apiPrefix}/orders`, orderRouter);
-app.use(`${apiPrefix}/carts`, cartRouter);
+app.use(`${apiPrefix}/stores`, storeRouter);
+app.use(`${apiPrefix}/categories`, categoryRouter);
+// app.use(`${apiPrefix}/products`, productRouter);
+// app.use(`${apiPrefix}/orders`, orderRouter);
+// app.use(`${apiPrefix}/carts`, cartRouter);
 app.use(`${apiPrefix}/images`, imageRouter)
 
 app.get("/", (req, res) => {

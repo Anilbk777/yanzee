@@ -1,58 +1,17 @@
-import { v2 as cloudinary } from "cloudinary";
+import { randomUUID } from "crypto";
 import streamifier from "streamifier";
 import { fileTypeFromBuffer } from "file-type";
-import AppError from "./AppError.js";
-import logger from "./logger.js";
-import constants from "./constants.js";
+import { v2 as cloudinary } from 'cloudinary';
 
-const CLOUDINARY_CLOUD_NAME = process.env.CLOUDINARY_CLOUD_NAME;
+import logger from "../utils/logger.js";
+import AppError from "../utils/AppError.js";
+import constants from "../utils/constants.js";
 
-const CLOUDINARY_IMAGE_URL_REGEX = new RegExp(
-  `^https://res\\.cloudinary\\.com/${CLOUDINARY_CLOUD_NAME}/image/upload/(?:v\\d+/)?(.+?)\\.(?:jpe?g|png|webp|avif|gif)$`,
-  "i",
-);
-const TRANSFORMATION_SEGMENT =
-  /,|^[a-z]{1,3}_[\w.,]+(?:,[a-z]{1,3}_[\w.,]+)*$/i;
+export const IMAGE_ENTITY_TYPES = ["categories", "brands", "products", "logos", "seo"];
 
-const looksLikeTransformation = (publicId) =>
-  typeof publicId === "string" &&
-  publicId.split("/").some((segment) => TRANSFORMATION_SEGMENT.test(segment));
+const UUID = "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}";
 
-const extractPublicIdFromUrl = (url) => {
-  try {
-    const match =
-      typeof url === "string" ? url.match(CLOUDINARY_IMAGE_URL_REGEX) : null;
-    if (!match || looksLikeTransformation(match[1])) return null;
-    return match[1];
-  } catch (error) {
-    logger.error("Error extracting public ID", error);
-    return null;
-  }
-};
-
-function isValidCloudinaryImageUrl(url) {
-  if (typeof url !== "string") return false;
-  return CLOUDINARY_IMAGE_URL_REGEX.test(url);
-}
-
-function validateImageUrls(urls) {
-  if (!urls) return true;
-  if (!Array.isArray(urls)) return false;
-  for (const url of urls) {
-    if (!isValidCloudinaryImageUrl(url)) return false;
-  }
-  return true;
-}
-
-function diffImages(currentImages, newImages) {
-  const newPublicIds = newImages.map((img) => extractPublicIdFromUrl(img));
-  const toDelete = currentImages.filter(
-    (img) => !newPublicIds.includes(extractPublicIdFromUrl(img)),
-  );
-  return { toDelete };
-}
-
-const validateRealFileType = async (buffer) => {
+export const validateRealFileType = async (buffer) => {
   const fileTypeResult = await fileTypeFromBuffer(buffer);
 
   if (!fileTypeResult || !fileTypeResult.mime.startsWith("image/")) {
@@ -61,85 +20,131 @@ const validateRealFileType = async (buffer) => {
   return fileTypeResult.mime;
 };
 
-const uploadBufferToCloudinary = async (buffer, folder) => {
-  return new Promise((resolve, reject) => {
-    const uploadStream = cloudinary.uploader.upload_stream(
+const uploadToCloudinary = (buffer, publicId) =>
+  new Promise((resolve, reject) => {
+    const stream = cloudinary.uploader.upload_stream(
       {
-        folder,
+        public_id: publicId,
         resource_type: "image",
-        overwrite: true,
-        invalidate: true,
-        format: "png",
+        format: "webp",
+        overwrite: false,
+        transformation: [{ width: 1600, height: 1600, crop: "limit" }, { quality: "auto" }],
       },
       (error, result) => {
         if (error) {
-          logger.error("Cloudinary upload error", error);
+          logger.error({ err: error }, "Cloudinary upload error");
           return reject(error);
         }
         resolve(result);
-      },
+      }
     );
-
-    streamifier.createReadStream(buffer).pipe(uploadStream);
+    streamifier.createReadStream(buffer).pipe(stream);
   });
+// Goes to temp/ and is moved later (categories, brands, products...)
+export const uploadTempImage = (buffer, storeId, kind) =>
+  uploadToCloudinary(buffer, `temp/stores/${storeId}/${kind}/${randomUUID()}`);
+
+// Goes straight to the permanent path (store logo)
+export const uploadImage = (buffer, storeId, kind) =>
+  uploadToCloudinary(buffer, `stores/${storeId}/${kind}/${randomUUID()}`);
+
+
+// Returns { publicId, isTemp } if the URL is OUR cloud, THIS store, THIS entityType; otherwise null
+export const parseImageUrl = (rawUrl, storeId, entityType) => {
+  let url;
+  try {
+    url = new URL(rawUrl);
+  } catch {
+    return null;
+  }
+
+  if (url.protocol !== "https:" || url.hostname !== "res.cloudinary.com" || url.search || url.hash) {
+    return null;
+  }
+
+  // storeId comes from the DB (verifyStore) and entityType from an allowlist, so both are safe in a regex
+  const re = new RegExp(
+    `^/${process.env.CLOUDINARY_CLOUD_NAME}/image/upload/(?:v\\d+/)?((temp/)?stores/${storeId}/${entityType}/${UUID})\\.webp$`,
+    "i"
+  );
+  const match = url.pathname.match(re);
+
+  return match ? { publicId: match[1], isTemp: Boolean(match[2]) } : null;
 };
 
-const deleteFromCloudinary = async (imageUrl) => {
-  if (!imageUrl) return;
+// Validates the URL and moves temp/ -> permanent when needed.
+// Already-permanent URLs (client re-sending the current image) pass through untouched.
+export const finalizeImage = async (rawUrl, storeId, entityType) => {
+  const parsed = parseImageUrl(rawUrl, storeId, entityType);
+  if (!parsed) throw new AppError("Invalid image URL", constants.BadRequest);
 
-  const publicId = extractPublicIdFromUrl(imageUrl);
-  if (!publicId) return;
+  if (!parsed.isTemp) return { url: rawUrl, publicId: parsed.publicId, moved: false };
+
+  const tempId = parsed.publicId;
+  const finalId = tempId.replace(/^temp\//, "");
 
   try {
-    const result = await cloudinary.uploader.destroy(publicId, {
-      resource_type: "image",
+    const result = await cloudinary.uploader.rename(tempId, finalId, {
+      overwrite: false,
       invalidate: true,
     });
-    logger.info({ publicId, result }, "Cloudinary image deleted");
-  } catch (err) {
-    logger.error({ publicId, err }, "Error deleting Cloudinary image");
-    // intentionally not re-thrown — cleanup failure shouldn't fail the update
+    return { url: result.secure_url, publicId: result.public_id, tempId, moved: true };
+  } catch (error) {
+    if (error?.http_code === 404) {
+      throw new AppError("Image not found or expired, please upload it again", constants.BadRequest);
+    }
+    throw error;
   }
 };
 
-const deleteCloudinaryImages = async (publicIds = []) => {
-  if (!publicIds.length) return;
+// Compensation: DB write failed after the move, so put the file back in temp/ for the sweeper
+export const revertImage = (image) =>
+  image?.moved
+    ? cloudinary.uploader
+      .rename(image.publicId, image.tempId, { overwrite: false })
+      .catch((err) => logger.error({ err, image }, "Failed to revert image move"))
+    : Promise.resolve();
 
-  const BATCH_SIZE = 100;
-  let chunks = [];
-  for (let i = 0; i < publicIds.length; i += BATCH_SIZE) {
-    chunks.push(publicIds.slice(i, i + BATCH_SIZE));
-  }
+// Best-effort delete of an image we own (e.g. replaced or category deleted)
+export const deleteImageByUrl = async (rawUrl, storeId, entityType) => {
+  const parsed = rawUrl && parseImageUrl(rawUrl, storeId, entityType);
+  if (!parsed) return;
 
-  try {
-    const results = await Promise.all(
-      chunks.map((chunk) =>
-        cloudinary.api.delete_resources(chunk, {
-          resource_type: "image",
-          invalidate: true,
-        }),
-      ),
-    );
-    logger.info({
-      msg: "Cloudinary bulk delete completed",
-      count: publicIds.length,
-    });
-    return results;
-  } catch (err) {
-    logger.error({
-      msg: "Failed to bulk delete Cloudinary images",
-      error: err.message,
-    });
-  }
+  await cloudinary.uploader
+    .destroy(parsed.publicId, { invalidate: true })
+    .catch((err) => logger.error({ err, publicId: parsed.publicId }, "Failed to delete image"));
+  // logger.info({ publicId: parsed.publicId }, "Deleted image successfully");
 };
 
-export {
-  extractPublicIdFromUrl,
-  validateRealFileType,
-  uploadBufferToCloudinary,
-  deleteFromCloudinary,
-  isValidCloudinaryImageUrl,
-  validateImageUrls,
-  deleteCloudinaryImages,
-  diffImages,
+// Run daily. Deletes temp/ images older than maxAgeHours.
+export const cleanupTempImages = async (maxAgeHours = 24) => {
+  const cutoff = Date.now() - maxAgeHours * 60 * 60 * 1000;
+  let cursor;
+  let deleted = 0;
+
+  do {
+    const res = await cloudinary.api.resources({
+      type: "upload",
+      prefix: "temp/",
+      max_results: 500,
+      next_cursor: cursor,
+    });
+
+    const stale = res.resources
+      .filter((r) => new Date(r.created_at).getTime() < cutoff)
+      .map((r) => r.public_id);
+
+    for (let i = 0; i < stale.length; i += 100) {
+      await cloudinary.api.delete_resources(stale.slice(i, i + 100), {
+        type: "upload",
+        resource_type: "image",
+        invalidate: true,
+      });
+    }
+
+    deleted += stale.length;
+    cursor = res.next_cursor;
+  } while (cursor);
+
+  logger.info({ deleted }, "Temp image cleanup finished");
 };

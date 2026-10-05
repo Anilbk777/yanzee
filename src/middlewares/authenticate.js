@@ -11,7 +11,7 @@ const authenticateUser = async (req, res, next) => {
         }
         const decoded = jwt.verify(token, process.env.JWT_ACCESS_TOKEN_SECRET);
         const user = await getUserById(decoded.id);
-        if (!user) {
+        if (!user || !user.isActive) {
             throw new AppError("Unauthorized access", constants.Unauthorized);
         }
         req.userId = user.id;

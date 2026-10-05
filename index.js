@@ -5,12 +5,15 @@ import initCloudinary from "./src/config/cloudinaryConfig.js";
 import app from "./app.js";
 import logger from "./src/utils/logger.js";
 
+import { initCronJobs } from "./src/utils/cornJob.js";
+
 const PORT = process.env.PORT || 3000;
 
 const startServer = async () => {
     try {
         await testDB();
         initCloudinary();
+        initCronJobs();
 
         app.listen(PORT, () => {
             logger.info(`Server running on port ${PORT}`);

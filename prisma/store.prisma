@@ -1,0 +1,103 @@
+enum StoreStatus {
+    ACTIVE
+    SUSPENDED
+    CLOSED
+}
+
+enum BusinessCategory {
+    GENERAL
+    FASHION
+    BEAUTY
+    ELECTRONICS
+    GROCERY
+    PHARMACY
+    PET_SUPPLIES
+    SPORTS
+    RESTAURANTS
+    HOME_DECOR
+    OTHER
+}
+
+model Store {
+    id          String           @id @default(uuid())
+    name        String
+    slug        String           @unique // acme.yourplatform.com
+    status      StoreStatus      @default(ACTIVE)
+    isPublished Boolean          @default(true) @map("is_published")
+    category    BusinessCategory @default(GENERAL)
+
+    logo String?
+
+    contactEmail String @map("contact_email")
+    contactPhone String @map("contact_phone")
+    storeAddress String @map("store_address")
+
+    // Ecommerce Compliance information
+    businessName       String? @map("business_name")
+    businessEmail      String? @map("business_email")
+    businessPhone      String? @map("business_phone")
+    businessAddress    String? @map("business_address")
+    panNumber          String? @map("pan_number")
+    registrationNumber String? @map("registration_number")
+    ecommerceLicense   String? @map("ecommerce_license")
+
+    returnPolicy String? @map("return_policy") @db.Text
+
+    seoTitle       String? @map("seo_title")
+    seoDescription String? @map("seo_description")
+    seoImage       String? @map("seo_image")
+
+    createdAt DateTime @default(now()) @map("created_at")
+    updatedAt DateTime @updatedAt @map("updated_at")
+
+    members    StoreMember[]
+    invites    StoreInvite[]
+    categories Category[]
+    brands     Brand[]
+    products   Product[]
+    orders     Order[]
+    reviews    Review[]
+
+    @@unique([name, slug])
+    @@index([status])
+    @@map("stores")
+}
+
+// WHO can do WHAT in WHICH store. This one table replaces "User.storeId".
+// Owner of 3 stores = 3 rows with role OWNER. A manager hired by two shops = 2 rows.
+model StoreMember {
+    id        String   @id @default(uuid())
+    storeId   String   @map("store_id")
+    store     Store    @relation(fields: [storeId], references: [id], onDelete: Cascade)
+    userId    String   @map("user_id")
+    user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+    createdAt DateTime @default(now()) @map("created_at")
+
+    @@unique([storeId, userId]) // a person has ONE role in a store
+    @@index([userId]) // "my stores" list / store switcher
+    @@map("store_members")
+}
+
+// Custom migration SQL (Prisma can't express it): at most ONE owner per store.
+//   CREATE UNIQUE INDEX uq_one_owner_per_store ON store_members (store_id) WHERE role = 'OWNER';
+// (A store must always have an owner: create the OWNER row in the same transaction as the store.)
+
+// Owner invites staff by email. Works for people who already have an account
+// (they just get a membership) and for new people (they sign up first).
+model StoreInvite {
+    id          String    @id @default(uuid())
+    storeId     String    @map("store_id")
+    store       Store     @relation(fields: [storeId], references: [id], onDelete: Cascade)
+    email       String
+    role        UserRole
+    tokenHash   String    @unique @map("token_hash") // store a HASH of the emailed token
+    invitedById String    @map("invited_by_id")
+    invitedBy   User      @relation(fields: [invitedById], references: [id], onDelete: Cascade)
+    expiresAt   DateTime  @map("expires_at")
+    acceptedAt  DateTime? @map("accepted_at")
+    createdAt   DateTime  @default(now()) @map("created_at")
+
+    @@index([storeId])
+    @@index([email])
+    @@map("store_invites")
+}

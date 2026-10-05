@@ -1,49 +1,25 @@
 import { Router } from "express";
+
+import authenticateUser from "../../middlewares/authenticate.js";
+import requireStoreRole from "../../middlewares/requireStoreRole.js";
+import verifyStore from "../../middlewares/verifyStore.js";
+import { validateParams } from "../../middlewares/requestValidate.js";
+import { UploadEntityTypeSchema } from "./imageUploadValidation.js"
 import {
-    uploadUserImageController,
-    uploadShopImageController,
-    uploadProductImageController,
-    uploadProductGalleryController
+    uploadStoreImageController, uploadImageController
 } from "./imageUploadController.js";
 import {
     imageUploadMiddleware,
-    imageMultipleUploadMiddleware
 } from "../../middlewares/imageUploadMiddleware.js";
-import authenticateUser from "../../middlewares/authenticate.js";
-import requireOwner from "../../middlewares/requireOwner.js";
-import { UserRole } from "../../../generated/prisma/index.js";
-import authorizeRole from "../../middlewares/authorizeRole.js";
+
 
 const imageRouter = Router();
+const canUpload = requireStoreRole("OWNER", "MANAGER")
 
-imageRouter.post(
-    "/user",
-    authenticateUser,
-    authorizeRole([UserRole.CUSTOMER, UserRole.SHOP_OWNER]),
-    imageUploadMiddleware,
-    uploadUserImageController
-);
-imageRouter.post(
-    "/shop",
-    authenticateUser,
-    authorizeRole([UserRole.SHOP_OWNER]),
-    imageUploadMiddleware,
-    uploadShopImageController
-);
-imageRouter.post(
-    "/product/cover",
-    authenticateUser,
-    requireOwner,
-    imageUploadMiddleware,
-    uploadProductImageController
-)
+imageRouter.use(authenticateUser, verifyStore, canUpload);
 
-imageRouter.post(
-    "/product/gallery",
-    authenticateUser,
-    requireOwner,
-    imageMultipleUploadMiddleware,
-    uploadProductGalleryController
-)
+imageRouter.post("/store-logo", imageUploadMiddleware, uploadStoreImageController);
+
+imageRouter.post("/:entityType", validateParams(UploadEntityTypeSchema), imageUploadMiddleware, uploadImageController)
 
 export default imageRouter;

@@ -87,9 +87,7 @@ const commonFields = {
         .nullable(),
 };
 
-// Status WITHOUT the DRAFT default. `z.enum().default("DRAFT").optional()` still
-// applies the default in Zod 4, which would silently reset status back to
-// DRAFT on every partial update.
+
 const updateFields = {
     ...commonFields,
     status: z.enum(PRODUCT_STATUSES, { error: "Invalid product status" }).optional(),

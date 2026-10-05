@@ -1,104 +1,61 @@
-import {
-  validateRealFileType,
-  uploadBufferToCloudinary,
-  deleteFromCloudinary,
-} from "../../utils/imageUpload.js";
+import { v2 as cloudinary } from "cloudinary";
 import AppError from "../../utils/AppError.js";
 import constants from "../../utils/constants.js";
 import logger from "../../utils/logger.js";
-import { updateUserImage, getUserProfileImg } from "./imageUploadModel.js";
+import { updateStoreLogoModel } from "./imageUploadModel.js";
+import {
+  validateRealFileType,
+  uploadTempImage,
+  uploadImage,
+  deleteImageByUrl
+} from "../../utils/imageUpload.js";
 
-const { maxImagesPerUpload } = constants.IMAGE_LIMITS;
 
-const validateAllFiles = async (files) => {
-  for (const file of files) {
-    await validateRealFileType(file.buffer);
-  }
-};
-
-const uploadUserImageService = async (file, folder, user) => {
-  logger.info("Upload user image started");
-
-  if (!file) {
-    throw new AppError("No file provided", constants.BadRequest);
-  }
+const uploadStoreImageService = async (file, store) => {
+  logger.info({ storeId: store.id }, "store logo uploading")
+  if (!file) throw new AppError("No file provided", constants.BadRequest);
   await validateRealFileType(file.buffer);
 
-  const cloudinaryResult = await uploadBufferToCloudinary(file.buffer, folder);
+  const uploaded = await uploadImage(file.buffer, store.id, "logos");
 
-  const updatedUser = await updateUserImage(
-    user.id,
-    cloudinaryResult.secure_url,
-  );
-  if (user.profileImg) {
-    await deleteFromCloudinary(user.profileImg);
+  let updated;
+  try {
+    updated = await updateStoreLogoModel(store.id, uploaded.secure_url);
+  } catch (error) {
+    // DB write failed, so don't leave an orphan in Cloudinary
+    await cloudinary.uploader
+      .destroy(uploaded.public_id, { invalidate: true })
+      .catch((err) => logger.error({ err, publicId: uploaded.public_id }, "Failed to roll back logo upload"));
+    throw error;
   }
 
-  logger.info("Upload user image completed");
+  // DB succeeded, so remove the previous logo (best effort, never blocks the response)
+  if (store.logo) deleteImageByUrl(store.logo, store.id, "logos");
+
+  logger.info({ storeId: store.id }, "Store logo updated");
+
   return {
     statusCode: 200,
-    message: "Image uploaded successfully",
-    data: {
-      id: updatedUser.id,
-      fullName: updatedUser.fullName,
-      role: updatedUser.role,
-      profileImg: updatedUser.profileImg,
-    },
+    message: "Store logo updated successfully",
+    data: { store: updated },
   };
 };
 
-const uploadSingleImageService = async (file, folder) => {
-  logger.info("Upload single image started");
-
-  if (!file) {
-    throw new AppError("No file provided", constants.BadRequest);
-  }
+const uploadImageService = async (file, storeId, entityType) => {
+  logger.info("Upload image started");
+  if (!file) throw new AppError("No file provided", constants.BadRequest);
   await validateRealFileType(file.buffer);
-  const cloudinaryResult = await uploadBufferToCloudinary(file.buffer, folder);
 
-  logger.info("Upload single image completed");
+  const result = await uploadTempImage(file.buffer, storeId, entityType);
+
   return {
     statusCode: 200,
     message: "Image uploaded successfully",
-    data: {
-      url: cloudinaryResult.secure_url,
-      publicId: cloudinaryResult.public_id,
-    },
-  };
-};
-
-const uploadMultipleImagesService = async (files, folder) => {
-  logger.info("Upload multiple images started");
-
-  if (!files || files.length === 0) {
-    throw new AppError("No files provided", constants.BadRequest);
-  }
-
-  // multer already caps the count; this keeps the rule true for any caller
-  // that reaches the service directly.
-  if (files.length > maxImagesPerUpload) {
-    throw new AppError(
-      `You can upload at most ${maxImagesPerUpload} images at a time`,
-      constants.BadRequest,
-    );
-  }
-
-  await validateAllFiles(files);
-  const cloudinaryResults = await Promise.all(files.map((file) => uploadBufferToCloudinary(file.buffer, folder)));
-
-  logger.info("Upload multiple images completed");
-  return {
-    statusCode: 200,
-    message: "Images uploaded successfully",
-    data: {
-      urls: cloudinaryResults.map((result) => result.secure_url),
-      publicIds: cloudinaryResults.map((result) => result.public_id),
-    },
+    data: { url: result.secure_url },
   };
 };
 
 export {
-  uploadUserImageService,
-  uploadSingleImageService,
-  uploadMultipleImagesService,
+  uploadStoreImageService,
+  uploadImageService,
 };

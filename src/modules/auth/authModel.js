@@ -1,48 +1,43 @@
 import prisma from "../../config/dbConfig.js";
 
-// The profile shape returned by /me and PATCH /me. Kept in one place so the two
-// endpoints can never drift, and so `password` can never leak out of a query.
-const USER_PROFILE_SELECT = {
-    id: true,
-    fullName: true,
-    email: true,
-    role: true,
-    profileImg: true,
-    phone: true,
-    gender: true,
-    address: true,
-    city: true,
-    province: true,
-    district: true,
-    country: true,
-    shop: {
-        select: {
-            id: true,
-            name: true,
-            ownerId: true,
-            // Loaded so requireOwner can hand the update flows the shop's
-            // current image without a second query.
-            image: true,
-        },
-    },
-};
-
 export const createUser = async (userData) => {
     return await prisma.user.create({
-        data: userData
+        data: userData,
+        select: {
+            id: true,
+            fullName: true,
+            email: true,
+            phone: true,
+        }
     })
 }
 
 export const getUserByEmail = async (email) => {
     return await prisma.user.findUnique({
-        where: { email }
+        where: { email },
+        select: {
+            id: true,
+            fullName: true,
+            email: true,
+            phone: true,
+            password: true,
+            role: true
+        }
     })
 }
 
 export const getUserById = async (userId) => {
     return await prisma.user.findUnique({
-        select: USER_PROFILE_SELECT,
         where: { id: userId },
+        select: {
+            id: true,
+            email: true,
+            fullName: true,
+            phone: true,
+            profileImg: true,
+            isActive: true,
+            role: true
+        },
     });
 };
 
@@ -50,7 +45,6 @@ export const updateUserById = async (userId, data) => {
     return await prisma.user.update({
         where: { id: userId },
         data,
-        select: USER_PROFILE_SELECT,
     });
 };
 
@@ -67,9 +61,6 @@ export const findSessionByToken = async (tokenHash) => {
             user: {
                 select: {
                     id: true,
-                    fullName: true,
-                    email: true,
-                    role: true,
                 }
             }
         }

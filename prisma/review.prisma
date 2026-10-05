@@ -1,0 +1,23 @@
+model Review {
+  id      String @id @default(uuid())
+  storeId String @map("store_id")
+  store   Store  @relation(fields: [storeId], references: [id], onDelete: Cascade)
+ 
+  orderItemId String    @unique @map("order_item_id") // one review per purchased item
+  orderItem   OrderItem @relation(fields: [orderItemId], references: [id], onDelete: Cascade)
+  productId   String?   @map("product_id")
+  product     Product?  @relation(fields: [productId], references: [id], onDelete: SetNull)
+ 
+  reviewerName String   @map("reviewer_name") // copied from the order
+  rating       Int // 1..5   (CHECK in SQL)
+  comment      String?  @db.Text
+  images       String[] @default([])
+  isVisible    Boolean  @default(true) @map("is_visible") // owner can hide spam/abuse
+ 
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+ 
+  @@index([storeId, createdAt])
+  @@index([productId, isVisible, createdAt])
+  @@map("reviews")
+}
