@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-const name = z.string().trim().min(1, "Category name is required").max(100, "Category name cannot exceed 100 characters");
+const name = z.string().trim().min(1, "Brand name is required").max(100, "Brand name cannot exceed 100 characters");
 
 const slug = z
     .string()
@@ -10,46 +10,45 @@ const slug = z
     .max(100, "Slug cannot exceed 100 characters")
     .regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/, "Slug can only contain lowercase letters, numbers and single hyphens");
 
-const image = z.url("Invalid image URL");
-
-// "" becomes null; null/undefined are allowed, so clients can clear a field
 const optionalText = (max, message) =>
     z.string().trim().max(max, message).transform((v) => v || null).nullish();
 
-const optionalUrl = z.url("Invalid URL").nullish();
+const optionalUrl = z.url("Invalid URL").max(500, "URL is too long").nullish();
 
-export const CreateCategorySchema = z.object({
+export const CreateBrandSchema = z.object({
     name,
-    image, // required
+    logo: optionalUrl,
     description: optionalText(5000, "Description is too long"),
     seoTitle: optionalText(70, "SEO title cannot exceed 70 characters"),
     seoImage: optionalUrl,
-    isAvailable: z.boolean().optional(), // DB default is true
+    isAvailable: z.boolean().optional(),
 });
 
-export const UpdateCategorySchema = z
+// For logo and seoImage: undefined = leave as is, null = remove, string = replace
+export const UpdateBrandSchema = z
     .object({
         name: name.optional(),
         slug: slug.optional(),
-        image: image.optional(), // can be replaced but not cleared
+        logo: optionalUrl,
         description: optionalText(5000, "Description is too long"),
         seoTitle: optionalText(70, "SEO title cannot exceed 70 characters"),
         seoImage: optionalUrl,
-        isAvailable: z.boolean().optional(),
+    })
+    .refine((data) => Object.values(data).some((v) => v !== undefined), {
+        message: "At least one field must be provided",
     });
 
-export const SetAvailabilitySchema = z.object({
+export const SetBrandAvailabilitySchema = z.object({
     isAvailable: z.boolean("isAvailable must be true or false"),
 });
 
-export const CategoryIdSchema = z.object({
-    categoryId: z.uuid("Invalid category id"),
+export const BrandIdSchema = z.object({
+    brandId: z.uuid("Invalid brand id"),
 });
 
-export const ListCategoriesQuerySchema = z.object({
+export const ListBrandsQuerySchema = z.object({
     page: z.coerce.number().int().min(1).default(1),
     limit: z.coerce.number().int().min(1).max(100).default(20),
     search: z.string().trim().max(100).optional(),
-    // z.coerce.boolean() would turn the string "false" into true, so map it by hand
     isAvailable: z.enum(["true", "false"]).transform((v) => v === "true").optional(),
 });

@@ -74,7 +74,7 @@ export const parseImageUrl = (rawUrl, storeId, entityType) => {
 
 // Validates the URL and moves temp/ -> permanent when needed.
 // Already-permanent URLs (client re-sending the current image) pass through untouched.
-export const finalizeImage = async (rawUrl, storeId, entityType) => {
+const finalizeImage = async (rawUrl, storeId, entityType) => {
   const parsed = parseImageUrl(rawUrl, storeId, entityType);
   if (!parsed) throw new AppError("Invalid image URL", constants.BadRequest);
 
@@ -147,4 +147,23 @@ export const cleanupTempImages = async (maxAgeHours = 24) => {
   } while (cursor);
 
   logger.info({ deleted }, "Temp image cleanup finished");
+};
+
+
+
+
+// Moves a temp upload to its permanent path. Rejects permanent URLs here, otherwise a client could
+// attach another brand's existing image, and deleting one brand would break the other.
+export const claimImage = async (url, storeId, kind) => {
+  const file = await finalizeImage(url, storeId, kind);
+  if (!file.moved) throw new AppError("Image must be freshly uploaded", constants.BadRequest);
+  return file;
+};
+
+// undefined = leave alone, null = remove, string = replace (re-sending the current URL = leave alone)
+export const prepareImage = async (value, current, storeId, kind) => {
+  if (value === undefined || value === current) return { url: undefined, file: null };
+  if (value === null) return { url: null, file: null };
+  const file = await claimImage(value, storeId, kind);
+  return { url: file.url, file };
 };

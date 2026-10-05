@@ -22,8 +22,6 @@ const detailSelect = {
     seoTitle: true,
     seoImage: true,
     isAvailable: true,
-    createdAt: true,
-    updatedAt: true,
 };
 
 export const createCategoryModel = (storeId, data) =>
@@ -48,7 +46,7 @@ export const getCategoriesModel = async (storeId, { page, limit, search, isAvail
         })
     };
 
-    const [items, total] = await prisma.$transaction([
+    const [items, total] = await Promise.all([
         prisma.category.findMany({
             where,
             select: listSelect,
@@ -65,7 +63,7 @@ export const getCategoriesModel = async (storeId, { page, limit, search, isAvail
 export const getCategoryByIdModel = (storeId, categoryId) =>
     prisma.category.findUnique({
         where: { id: categoryId, storeId },
-        select: { ...detailSelect, _count: { select: { products: true } } },
+        select: { ...detailSelect },
     });
 
 // Throws P2025 when not found, P2002 when the slug is taken

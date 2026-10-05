@@ -13,8 +13,9 @@ import {
     getCategoryWithImagesModel
 } from "./categoryModel.js";
 import {
-    finalizeImage,
     revertImage,
+    claimImage,
+    prepareImage,
     deleteImageByUrl
 } from "../../utils/imageUpload.js"
 
@@ -30,36 +31,43 @@ export const createCategoryService = async (storeId, payload) => {
     const { name, image, description, seoTitle, seoImage, isAvailable } = payload;
     const baseSlug = slugify(name, { fallback: "category" });
 
-    const finalImage = await finalizeImage(image, storeId, "categories");
-    const finalSeoImage = seoImage ? await finalizeImage(seoImage, storeId, "seo") : null;
-
     logger.info({ storeId }, "Attempting to create category");
 
-    for (let attempt = 1; attempt <= SLUG_MAX_ATTEMPTS; attempt++) {
-        // First try the clean slug, then add -xxxx on each retry
-        const slug = attempt === 1 ? baseSlug : `${baseSlug}-${randomSuffix()}`;
-
-        try {
-            const category = await createCategoryModel(storeId, {
-                name, slug, description, seoTitle, isAvailable,
-                image: finalImage.url,
-                seoImage: finalSeoImage?.url ?? null,
-            });
-
-            logger.info({ storeId, categoryId: category.id }, "Category created successfully");
-
-            return {
-                statusCode: 201,
-                message: "Category created successfully",
-                data: { category },
-            };
-        } catch (error) {
-            if (!isUniqueViolation(error)) throw error;
-            logger.warn({ storeId, slug, attempt }, "Category slug collision, retrying");
-        }
+    // Claim both in parallel; if either fails, put the other one back
+    const results = await Promise.allSettled([
+        claimImage(image, storeId, "categories"),
+        seoImage ? claimImage(seoImage, storeId, "seo") : null,
+    ]);
+    const failed = results.find((r) => r.status === "rejected");
+    if (failed) {
+        await Promise.all(results.filter((r) => r.status === "fulfilled").map((r) => revertImage(r.value)));
+        throw failed.reason;
     }
-    await Promise.all([revertImage(finalImage), revertImage(finalSeoImage)]);
-    throw new AppError("Could not generate a unique slug, please try again", constants.Conflict);
+    const [finalImage, finalSeoImage] = results.map((r) => r.value);
+
+    try {
+        for (let attempt = 1; attempt <= SLUG_MAX_ATTEMPTS; attempt++) {
+            const slug = attempt === 1 ? baseSlug : `${baseSlug}-${randomSuffix()}`;
+            try {
+                const category = await createCategoryModel(storeId, {
+                    name, slug, description, seoTitle, isAvailable,
+                    image: finalImage.url,
+                    seoImage: finalSeoImage?.url ?? null,
+                });
+
+                logger.info({ storeId, categoryId: category.id }, "Category created successfully");
+                return { statusCode: 201, message: "Category created successfully", data: { category } };
+            } catch (error) {
+                if (!isUniqueViolation(error)) throw error;
+                logger.warn({ storeId, slug, attempt }, "Category slug collision, retrying");
+            }
+        }
+        throw new AppError("Could not generate a unique slug, please try again", constants.Conflict);
+    } catch (error) {
+        // Any failure after the move puts the images back in temp/
+        await Promise.all([revertImage(finalImage), revertImage(finalSeoImage)]);
+        throw error;
+    }
 };
 
 export const getCategoriesService = async (storeId, query) => {
@@ -93,55 +101,66 @@ export const getCategoryService = async (storeId, categoryId) => {
     };
 };
 
+
 export const updateCategoryService = async (storeId, categoryId, payload) => {
-    logger.info({ storeId, categoryId }, "updating category");
+    logger.info({ storeId, categoryId }, "Updating category");
+
     const existing = await getCategoryWithImagesModel(storeId, categoryId);
     if (!existing) throw new AppError("Category not found", constants.NotFound);
 
     const { image, seoImage, ...rest } = payload;
 
-    const newImage = image && image !== existing.image ? await finalizeImage(image, storeId, "categories") : null;
-    const newSeoImage = seoImage && seoImage !== existing.seoImage ? await finalizeImage(seoImage, storeId, "seo") : null;
+    // prepareImage must return { url, file }, with file = the claimed object or null
+    const results = await Promise.allSettled([
+        prepareImage(image, existing.image, storeId, "categories"),
+        prepareImage(seoImage, existing.seoImage, storeId, "seo"),
+    ]);
+    const failed = results.find((r) => r.status === "rejected");
+    if (failed) {
+        await Promise.all(results.filter((r) => r.status === "fulfilled").map((r) => revertImage(r.value.file)));
+        throw failed.reason;
+    }
+    const [img, seo] = results.map((r) => r.value);
 
+    let category;
     try {
-        const category = await updateCategoryModel(storeId, categoryId, {
+        category = await updateCategoryModel(storeId, categoryId, {
             ...rest,
-            ...(newImage && { image: newImage.url }),
-            ...(newSeoImage && { seoImage: newSeoImage.url }),
+            image: img.url,          // undefined = unchanged
+            seoImage: seo.url,       // null = removed
         });
-
-        // DB succeeded, so clean up the replaced files (best effort, never blocks the response)
-        let tasks = [];
-        if (newImage) tasks.push(deleteImageByUrl(existing.image, storeId, "categories"));
-        if (newSeoImage) tasks.push(deleteImageByUrl(existing.seoImage, storeId, "seo"));
-        await Promise.all(tasks);
-
-        return { statusCode: 200, message: "Category updated successfully", data: { category } };
     } catch (error) {
-        await Promise.all([revertImage(newImage), revertImage(newSeoImage)]);
+        await Promise.all([revertImage(img.file), revertImage(seo.file)]);
+
         if (isUniqueViolation(error)) {
             throw new AppError("Slug already exists. Please choose a different slug", constants.Conflict);
         }
-        if (isNotFound(error)) {
-            throw new AppError("Category not found", constants.NotFound);
-        }
-        throw error;
-    }
-};
-
-export const setCategoryAvailabilityService = async (storeId, categoryId, isAvailable) => {
-    try {
-        const category = await setCategoryAvailabilityModel(storeId, categoryId, isAvailable);
-
-        return {
-            statusCode: 200,
-            message: `Category turned ${isAvailable ? "on" : "off"} successfully`,
-            data: { category },
-        };
-    } catch (error) {
         if (isNotFound(error)) throw new AppError("Category not found", constants.NotFound);
         throw error;
     }
+
+    // DB succeeded: delete replaced/removed files. Outside the try so it can never trigger a revert.
+    await Promise.all([
+        img.url !== undefined ? deleteImageByUrl(existing.image, storeId, "categories") : null,
+        seo.url !== undefined ? deleteImageByUrl(existing.seoImage, storeId, "seo") : null,
+    ]);
+
+    logger.info({ storeId, categoryId }, "Category updated successfully");
+    return { statusCode: 200, message: "Category updated successfully", data: { category } };
+};
+
+export const setCategoryAvailabilityService = async (storeId, categoryId) => {
+    const category = await getCategoryByIdModel(storeId, categoryId);
+    if (!category) throw new AppError("Category not found", constants.NotFound);
+
+    const updatedCategory = await setCategoryAvailabilityModel(storeId, categoryId, !category.isAvailable);
+
+    return {
+        statusCode: 200,
+        message: `Category turned ${!category.isAvailable ? "on" : "off"} successfully`,
+        data: { category: updatedCategory },
+    };
+
 };
 
 export const deleteCategoryService = async (storeId, categoryId) => {

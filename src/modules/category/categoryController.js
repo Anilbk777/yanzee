@@ -30,7 +30,7 @@ export const updateCategoryController = asyncHandler(async (req, res) => {
 });
 
 export const setCategoryAvailabilityController = asyncHandler(async (req, res) => {
-    const response = await setCategoryAvailabilityService(req.storeId, req.params.categoryId, req.body.isAvailable);
+    const response = await setCategoryAvailabilityService(req.storeId, req.params.categoryId);
     ApiResponse(res, response);
 });
 

@@ -29,7 +29,7 @@ categoryRouter.post("/", canWrite, validateRequest(CreateCategorySchema), create
 
 categoryRouter.get("/:categoryId", validateParams(CategoryIdSchema), getCategoryController);
 categoryRouter.patch("/:categoryId", canWrite, validateParams(CategoryIdSchema), validateRequest(UpdateCategorySchema), updateCategoryController);
-categoryRouter.patch("/:categoryId/availability", canWrite, validateParams(CategoryIdSchema), validateRequest(SetAvailabilitySchema), setCategoryAvailabilityController);
+categoryRouter.post("/:categoryId/toggle-availability", canWrite, validateParams(CategoryIdSchema), setCategoryAvailabilityController);
 categoryRouter.delete("/:categoryId", canWrite, validateParams(CategoryIdSchema), deleteCategoryController);
 
 export default categoryRouter;
