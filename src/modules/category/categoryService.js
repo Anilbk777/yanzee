@@ -146,16 +146,9 @@ export const setCategoryAvailabilityService = async (storeId, categoryId, isAvai
 
 export const deleteCategoryService = async (storeId, categoryId) => {
     logger.info({ storeId, categoryId }, "deleting category");
+    let deletedCategory;
     try {
-        const deletedCategory = await deleteCategoryModel(storeId, categoryId);
-
-        logger.info({ storeId, categoryId }, "Category deleted successfully");
-
-        return {
-            statusCode: 200,
-            message: "Category deleted successfully",
-            data: { deletedCategory },
-        };
+        deletedCategory = await deleteCategoryModel(storeId, categoryId);
     } catch (error) {
         if (isNotFound(error)) {
             throw new AppError("Category not found", constants.NotFound);
@@ -176,4 +169,16 @@ export const deleteCategoryService = async (storeId, categoryId) => {
 
         throw error;
     }
+
+    let task = [];
+    if (deletedCategory.image) task.push(deleteImageByUrl(deletedCategory.image, storeId, "categories"));
+    if (deletedCategory.seoImage) task.push(deleteImageByUrl(deletedCategory.seoImage, storeId, "seo"));
+    await Promise.all(task);
+
+    logger.info({ storeId, categoryId }, "Category deleted successfully");
+    return {
+        statusCode: 200,
+        message: "Category deleted successfully",
+        data: { id: deletedCategory.id, name: deletedCategory.name },
+    };
 };

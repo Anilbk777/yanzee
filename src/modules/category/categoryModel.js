@@ -96,7 +96,7 @@ export const setCategoryAvailabilityModel = (storeId, categoryId, isAvailable) =
 export const deleteCategoryModel = (storeId, categoryId) =>
     prisma.category.delete({
         where: { id: categoryId, storeId },
-        select: { id: true, name: true },
+        select: { id: true, name: true, image: true, seoImage: true },
     });
 
 // Failure path only, used to build the error message

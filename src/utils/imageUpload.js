@@ -113,7 +113,7 @@ export const deleteImageByUrl = async (rawUrl, storeId, entityType) => {
   await cloudinary.uploader
     .destroy(parsed.publicId, { invalidate: true })
     .catch((err) => logger.error({ err, publicId: parsed.publicId }, "Failed to delete image"));
-  // logger.info({ publicId: parsed.publicId }, "Deleted image successfully");
+  logger.info({ publicId: parsed.publicId }, "Deleted image successfully");
 };
 
 // Run daily. Deletes temp/ images older than maxAgeHours.
