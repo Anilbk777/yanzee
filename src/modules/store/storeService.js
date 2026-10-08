@@ -130,7 +130,7 @@ const deleteStoreService = async (userId, storeId) => {
 
 const togglePublishService = async (userId, store) => {
     logger.info({ userId, storeId: store.id }, "Toggling store publish");
-    const updatedStore = await updateStoreDetailModel(store.id, { isPublished: !store.isPublished });
+    const updatedStore = await updateStoreDetailModel(userId,store.id, { isPublished: !store.isPublished });
     logger.info({ userId, storeId: store.id, isPublished: updatedStore.isPublished }, "Store toggled successfully");
     return {
         statusCode: 200,

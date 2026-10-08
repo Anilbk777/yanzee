@@ -1,6 +1,7 @@
 import 'dotenv/config';
 import { testDB } from "./src/config/dbConfig.js";
 import initCloudinary from "./src/config/cloudinaryConfig.js";
+import {checkRedis} from "./src/config/redisConfig.js"
 
 import app from "./app.js";
 import logger from "./src/utils/logger.js";
@@ -13,6 +14,7 @@ const startServer = async () => {
     try {
         await testDB();
         initCloudinary();
+        await checkRedis();
         initCronJobs();
 
         app.listen(PORT, () => {

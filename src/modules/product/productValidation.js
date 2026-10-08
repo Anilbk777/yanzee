@@ -1,174 +1,214 @@
 import { z } from "zod";
-import { isValidCloudinaryImageUrl, validateImageUrls } from "../../utils/imageUpload.js";
-import constants from "../../utils/constants.js";
 
-const { maxGalleryImages } = constants.IMAGE_LIMITS;
+// ---------- limits (match the Prisma column types) ----------
+const MAX_MONEY = 9_999_999_999.99; // Decimal(12, 2)
+const MAX_WEIGHT = 99_999.999;      // Decimal(8, 3)
+const MAX_QUANTITY = 10_000_000;
+const HEX_COLOR = /^#(?:[0-9a-f]{3}|[0-9a-f]{6})$/;
 
-export const PRODUCT_CATEGORIES = [
-    "FASHION",
-    "SPORTS",
-    "KIDS",
-    "BEAUTY",
-    "OUTLET",
-    "PREMIUM",
-    "HOME_DECOR",
-];
+// ---------- helpers ----------
+const hasMaxDecimals = (places) => (v) =>
+    Math.abs(v * 10 ** places - Math.round(v * 10 ** places)) < 1e-6;
 
-export const PRODUCT_STATUSES = ["ACTIVE", "DRAFT", "OUT_OF_STOCK"];
-export const PRODUCT_AUDIENCES = ["MEN", "WOMEN", "UNISEX", "BOY", "GIRL", "KIDS_UNISEX"];
-// export const SIZES = ["XS", "S", "M", "L", "XL", "XXL", "XXXL", "FREE_SIZE"];
+const money = ({ min = 0 } = {}) =>
+    z.number("Price must be a number")
+        .min(min, `Price must be at least ${min}`)
+        .max(MAX_MONEY, "Price is too large")
+        .refine(hasMaxDecimals(2), "Price can have at most 2 decimal places");
 
-const MAX_MONEY = 9999999999.99; // Decimal(12,2) ceiling
+// "" becomes null, null/undefined allowed (null = clear the field on update)
+const nullableText = (max, message) =>
+    z.string().trim().max(max, message).transform((v) => v || null).nullish();
 
-const money = (label) => z
-    .coerce.number()
-    .positive(`${label} must be greater than 0`)
-    .max(MAX_MONEY, `${label} cannot exceed ${MAX_MONEY}`)
-    .refine(
-        (value) => Math.abs(value * 100 - Math.round(value * 100)) < 1e-6,
-        `${label} can have at most 2 decimal places`
-    );
+const uniqueArray = (item, { min = 0, max, label }) =>
+    z.array(item)
+        .min(min, `At least ${min} ${label} required`)
+        .max(max, `You can add at most ${max} ${label}`)
+        .refine((arr) => new Set(arr).size === arr.length, `Duplicate ${label} are not allowed`);
 
-// Anchored to our own Cloudinary cloud, matching the shop validator. A generic
-// z.url() would let clients store an image we can never clean up from Cloudinary
-// when it is later replaced or removed. `.nullable()` is what lets a client say
-// "delete my image" by sending null.
-const imageUrl = z
-    .string()
-    .trim()
-    .max(2048, "Image URL cannot exceed 2048 characters")
-    .refine(isValidCloudinaryImageUrl, { message: "Invalid image URL" });
+const issue = (ctx, path, message) => ctx.addIssue({ code: "custom", path, message });
 
-const gallery = z
-    .array(imageUrl)
-    .max(maxGalleryImages, `Gallery cannot have more than ${maxGalleryImages} images`)
-    .default([]).refine(validateImageUrls, {
-        message: "Invalid image URL",
-        code: "invalid_image_url",
-    });
+// ---------- reusable field rules (NO .default() anywhere, so update schemas can't reset values) ----------
+const imageUrl = z.url("Invalid URL").nullish();
 
-const variant = z.object({
-    size: z.string().trim().min(1, "Size cannot be empty").max(20, "Size cannot exceed 20 characters").regex(/^[A-Za-z0-9 .\-\/]+$/, "Size can only contain letters, numbers, space, - . /"),
-    stock: z.coerce.number()
-        .int("Stock must be an integer")
-        .min(0, "Stock cannot be negative")
-        .max(1_000_000, "Stock cannot exceed 1000000"),
-    sku: z.string().trim().min(1, "SKU cannot be empty").max(64, "SKU cannot exceed 64 characters")
-        .optional()
-        .nullable(),
-});
 
-const variants = z
-    .array(variant)
-    .min(1, "At least one variant is required")
-    .max(20, "A product cannot have more than 20 variants")
-    .refine(
-        (list) => new Set(list.map((item) => item.size)).size === list.length,
-        "Two variants cannot have the same size"
-    );
+const sku = z
+    .string().trim().toUpperCase().max(64, "SKU cannot exceed 64 characters")
+    .regex(/^[A-Z0-9][A-Z0-9._-]*$/, "SKU can only contain letters, numbers, dot, dash and underscore")
+    .nullish();
 
-const commonFields = {
-    name: z.string().trim().min(1, "Product name is required").max(120, "Product name cannot exceed 120 characters"),
+const sellingPrice = money({ min: 0.01 });
 
-    category: z.enum(PRODUCT_CATEGORIES, { error: "Invalid product category" }),
-
-    status: z.enum(PRODUCT_STATUSES, { error: "Invalid product status" }).default("DRAFT"),
-
-    audience: z.enum(PRODUCT_AUDIENCES, { error: "Invalid product audience" }),
-
-    price: money("Price"),
-
-    discountPrice: money("Discount price").optional().nullable(),
-
-    image: imageUrl.optional().nullable(),
-
-    description: z.string().trim().max(5000, "Description cannot exceed 5000 characters")
-        .optional()
-        .nullable(),
+// Price, stock and identifier fields shared by the product and by every variant
+const inventoryShape = {
+    crossedPrice: money({ min: 0.01 }).nullish(),
+    costPrice: money().nullish(),
+    quantity: z.number("Quantity must be a number").int("Quantity must be a whole number")
+        .min(0, "Quantity cannot be negative").max(MAX_QUANTITY, "Quantity is too large").optional(),
+    weight: z.number("Weight must be a number").positive("Weight must be greater than 0")
+        .max(MAX_WEIGHT, "Weight is too large")
+        .refine(hasMaxDecimals(3), "Weight (kg) can have at most 3 decimal places").nullish(),
+    sku,
+    hsCode: z.string().trim().regex(/^\d{4,10}$/, "HS code must be 4 to 10 digits").nullish(),
+    altBarcode: z.string().trim().regex(/^[A-Za-z0-9-]{4,50}$/, "Invalid barcode").nullish(),
 };
 
-
-const updateFields = {
-    ...commonFields,
-    status: z.enum(PRODUCT_STATUSES, { error: "Invalid product status" }).optional(),
-};
-
-export const CreateProductSchema = z.object({
-    ...commonFields,
-    gallery,
-    variants,
-}).superRefine((data, ctx) => {
-    if (data.discountPrice != null && data.discountPrice > data.price) {
-        ctx.addIssue({
-            code: "custom",
-            path: ["discountPrice"],
-            message: "Discount price cannot be greater than price",
-        });
+// ---------- cross-field checks (kept out of the object schemas so .partial()/.extend() keep working) ----------
+const checkCrossedPrice = (data, ctx) => {
+    if (data.crossedPrice != null && data.sellingPrice != null && data.crossedPrice < data.sellingPrice) {
+        issue(ctx, ["crossedPrice"], "Crossed price must be greater than or equal to the selling price");
     }
-});
+};
 
-export const UpdateProductSchema = z
+const rejectDuplicates = (ctx, variants, field, normalize = (v) => v) => {
+    const seen = new Set();
+    variants.forEach((variant, i) => {
+        if (variant[field] == null) return;
+        const key = normalize(variant[field]);
+        if (seen.has(key)) issue(ctx, ["variants", i, field], `Duplicate variant ${field}`);
+        seen.add(key);
+    });
+};
+
+// ---------- variant ----------
+export const variantShape = {
+    name: z.string().trim().min(1, "Variant name is required").max(100, "Variant name cannot exceed 100 characters"),
+    size: nullableText(30, "Size cannot exceed 30 characters"),
+    colorCodes: uniqueArray(
+        z.string().trim().toLowerCase().regex(HEX_COLOR, "Color must be a hex code like #fff or #1a2b3c"),
+        { max: 2, label: "color codes" }
+    ).optional(),
+    sellingPrice, // required on a variant
+    ...inventoryShape,
+};
+
+export const VariantSchema = z.object(variantShape).superRefine(checkCrossedPrice);
+
+// An existing variant carries its id, and a new one has none
+export const VariantInputSchema = z
+    .object({ id: z.uuid("Invalid variant id").optional(), ...variantShape })
+    .superRefine(checkCrossedPrice);
+
+// ---------- update ----------
+const slug = z
+    .string().trim().toLowerCase().min(1, "Slug is required").max(150, "Slug cannot exceed 150 characters")
+    .regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/, "Slug can only contain lowercase letters, numbers and single hyphens");
+
+const generalShape = {
+    name: z.string().trim().min(1, "Product name is required").max(150, "Product name cannot exceed 150 characters"),
+    channel: z.enum(["ALL", "WEBSITE", "POS"], "Invalid channel").optional(),
+    audience: z.enum(["MEN", "WOMEN", "UNISEX", "BOY", "GIRL", "KIDS_UNISEX"], "Invalid audience").optional(),
+    brandId: z.uuid("Invalid brand id").nullish(),
+    categoryIds: uniqueArray(z.uuid("Invalid category id"), { max: 10, label: "categories" }),
+    productDescription: nullableText(500, "Description cannot exceed 500 characters"),
+    longDescription: nullableText(10000, "Long description cannot exceed 10000 characters"),
+    imageUrls: uniqueArray(imageUrl, { max: 10, label: "images" }),
+};
+
+const baseShape = { sellingPrice: sellingPrice.optional(), ...inventoryShape };
+
+const availabilityShape = { isAvailable: z.boolean("isAvailable must be true or false").optional() };
+
+const customShape = {
+    tags: z.array(z.string().trim().toLowerCase().min(1, "Tag cannot be empty").max(30, "Tag cannot exceed 30 characters"))
+        .max(20, "You can add at most 20 tags")
+        .transform((tags) => [...new Set(tags)])
+        .optional(),
+    releaseDate: z
+        .union([z.iso.datetime({ offset: true }), z.iso.date()], "Invalid release date")
+        .transform((v) => new Date(v))
+        .nullish(),
+    similarProductIds: uniqueArray(z.uuid("Invalid product id"), { max: 20, label: "similar products" }).optional(),
+};
+
+const seoShape = {
+    seoTitle: nullableText(70, "SEO title cannot exceed 70 characters"),
+    seoDescription: nullableText(300, "SEO description cannot exceed 300 characters"),
+    seoImage: imageUrl.nullish(), // null removes it
+};
+
+const statusEnum = z.enum(["ACTIVE", "DRAFT", "ARCHIVED"], "Invalid status");
+
+// ---------- cross-field rules ----------
+export const BASE_ONLY_FIELDS = ["crossedPrice", "sellingPrice", "costPrice", "quantity", "weight", "sku", "hsCode", "altBarcode"];
+
+const atLeastOne = (data, ctx) => {
+    if (Object.values(data).every((v) => v === undefined)) issue(ctx, [], "At least one field must be provided");
+};
+
+const rejectBaseFields = (data, ctx) => {
+    for (const field of BASE_ONLY_FIELDS) {
+        if (data[field] != null) issue(ctx, [field], `${field} must be set on each variant when the product has variants`);
+    }
+};
+
+const checkVariantList = (variants, ctx) => {
+    rejectDuplicates(ctx, variants, "name", (v) => v.toLowerCase());
+    rejectDuplicates(ctx, variants, "sku");
+    rejectDuplicates(ctx, variants, "id");
+};
+
+
+
+// ---------- create ----------
+export const CreateProductSchema = z
     .object({
-        name: updateFields.name.optional(),
-        category: updateFields.category.optional(),
-        status: updateFields.status,
-        audience: updateFields.audience.optional(),
-        price: updateFields.price.optional(),
-        discountPrice: updateFields.discountPrice,
-        image: updateFields.image,
-        description: updateFields.description,
-        gallery: z.array(imageUrl).max(maxGalleryImages, `Gallery cannot have more than ${maxGalleryImages} images`).optional(),
-        variants: variants.optional(),
+        ...generalShape,
+        ...baseShape,
+        ...availabilityShape,
+        ...customShape,
+        status: statusEnum.optional(),
+        variants: z.array(VariantSchema).max(100, "A product can have at most 100 variants").optional(),
     })
-    .refine((data) => Object.keys(data).length > 0, {
-        message: "At least one field is required to update",
+    .superRefine((data, ctx) => {
+        const variants = data.variants ?? [];
+
+        if (variants.length === 0) {
+            if (data.sellingPrice == null) issue(ctx, ["sellingPrice"], "Selling price is required for a product without variants");
+            checkCrossedPrice(data, ctx);
+            return;
+        }
+        rejectBaseFields(data, ctx);
+        checkVariantList(variants, ctx);
     });
 
-export const ProductIdParamsSchema = z.object({
-    productId: z.uuid("Invalid product id"),
-});
+
+// ---------- the 5 update schemas ----------
+export const UpdateGeneralSchema = z.object({ ...generalShape, slug }).partial().superRefine(atLeastOne);
+
+export const UpdateInventorySchema = z
+    .object({
+        ...baseShape,
+        ...availabilityShape,
+        variants: z.array(VariantInputSchema).max(100, "A product can have at most 100 variants").optional(),
+    })
+    .superRefine((data, ctx) => {
+        atLeastOne(data, ctx);
+        if (data.variants?.length > 0) {
+            rejectBaseFields(data, ctx);
+            checkVariantList(data.variants, ctx);
+        } else {
+            checkCrossedPrice(data, ctx); // only when both prices are in the request
+        }
+    });
+
+export const UpdateCustomSchema = z.object(customShape).partial().superRefine(atLeastOne);
+
+export const UpdateStatusSchema = z.object({ status: statusEnum });
+
+export const UpdateSeoSchema = z.object(seoShape).partial().superRefine(atLeastOne);
+
+export const ProductIdSchema = z.object({ productId: z.uuid("Invalid product id") });
+
 
 export const ListProductsQuerySchema = z.object({
-    page: z.coerce.number()
-        .int("Page must be an integer")
-        .min(1, "Page must be at least 1")
-        .default(1),
-
-    limit: z.coerce.number()
-        .int("Limit must be an integer")
-        .min(1, "Limit must be at least 1")
-        .max(50, "Limit cannot exceed 50")
-        .default(10),
-
-    search: z.string().trim().min(1, "Search cannot be empty").max(100, "Search cannot exceed 100 characters")
-        .optional(),
-
-    category: z.enum(PRODUCT_CATEGORIES, { error: "Invalid product category" }).optional(),
-
-    status: z.enum(PRODUCT_STATUSES, { error: "Invalid product status" }).optional(),
-
-    minPrice: z.coerce.number()
-        .min(0, "minPrice cannot be negative")
-        .max(MAX_MONEY, "minPrice cannot exceed MAX_MONEY")
-        .optional(),
-
-    maxPrice: z.coerce.number()
-        .min(0, "maxPrice cannot be negative")
-        .max(MAX_MONEY, "maxPrice cannot exceed MAX_MONEY")
-        .optional(),
-
-    sort: z.enum(["newest", "oldest", "price_asc", "price_desc", "name_asc"], {
-        error: "Invalid sort option",
-    }).optional(),
-
-    audience: z.enum(PRODUCT_AUDIENCES, { error: "Invalid product audience" }).optional(),
-
-}).refine((data) => {
-    if (data.minPrice !== undefined && data.maxPrice !== undefined) {
-        return data.minPrice <= data.maxPrice;
-    }
-    return true;
-}, {
-    message: "minPrice cannot be greater than maxPrice",
-    path: ["minPrice"],
+    page: z.coerce.number().int().min(1).default(1),
+    limit: z.coerce.number().int().min(1).max(100).default(20),
+    search: z.string().trim().max(100).optional(),
+    status: z.enum(["ACTIVE", "DRAFT", "ARCHIVED"]).optional(),
+    channel: z.enum(["ALL", "WEBSITE", "POS"]).optional(),
+    audience: z.enum(["MEN", "WOMEN", "UNISEX", "BOY", "GIRL", "KIDS_UNISEX"]).optional(),
+    brandId: z.uuid().optional(),
+    categoryId: z.uuid().optional(),
+    isAvailable: z.enum(["true", "false"]).transform((v) => v === "true").optional(),
 });

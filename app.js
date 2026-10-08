@@ -10,7 +10,7 @@ import authRouter from "./src/modules/auth/authRoute.js";
 import storeRouter from "./src/modules/store/storeRoute.js";
 import categoryRouter from "./src/modules/category/categoryRoute.js";
 import brandRouter from "./src/modules/brand/brandRoute.js";
-// import productRouter from "./src/modules/product/productRoute.js";
+import productRouter from "./src/modules/product/productRoute.js";
 // import orderRouter from "./src/modules/orders/orderRoute.js";
 // import cartRouter from "./src/modules/cart/cartRoute.js";
 import imageRouter from "./src/modules/imageUpload/imageUploadRoute.js"
@@ -23,7 +23,7 @@ app.use(cors({
     origin: process.env.CORS_ORIGIN || "*",
     credentials: true
 }));
-app.use(express.json({ limit: "16kb" }));
+app.use(express.json({ limit: "1mb" }));
 app.use(express.urlencoded({ extended: false }));
 app.use(cookieParser());
 
@@ -34,7 +34,7 @@ app.use(`${apiPrefix}/auth`, authRouter);
 app.use(`${apiPrefix}/stores`, storeRouter);
 app.use(`${apiPrefix}/categories`, categoryRouter);
 app.use(`${apiPrefix}/brands`, brandRouter);
-// app.use(`${apiPrefix}/products`, productRouter);
+app.use(`${apiPrefix}/products`, productRouter);
 // app.use(`${apiPrefix}/orders`, orderRouter);
 // app.use(`${apiPrefix}/carts`, cartRouter);
 app.use(`${apiPrefix}/images`, imageRouter)

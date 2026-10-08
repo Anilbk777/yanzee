@@ -1,227 +1,198 @@
 import prisma from "../../config/dbConfig.js";
 
-const toNull = (value) => {
-    if (value === undefined || value === null) return null;
-    const trimmed = typeof value === "string" ? value.trim() : value;
-    return trimmed === "" ? null : trimmed;
+const connectIds = (ids) => ids.map((id) => ({ id }));
+
+// ---------- selects ----------
+const variantSelect = {
+    id: true, name: true, size: true, colorCodes: true,
+    crossedPrice: true, sellingPrice: true, costPrice: true,
+    quantity: true, weight: true, sku: true, hsCode: true, altBarcode: true,
+    createdAt: true, updatedAt: true,
 };
 
-const DETAIL_SELECT = {
-    id: true,
-    shopId: true,
-    name: true,
-    description: true,
-    category: true,
-    status: true,
-    audience: true,
-    price: true,
-    discountPrice: true,
-    image: true,
-    gallery: true,
-    createdAt: true,
-    updatedAt: true,
-    variants: {
+// Variant products have no price/stock of their own, so the list reads them from the variants
+const listSelect = {
+    id: true, name: true, slug: true, status: true, channel: true, audience: true,
+    isAvailable: true, hasVariants: true, sellingPrice: true, crossedPrice: true,
+    quantity: true, imageUrls: true, createdAt: true,
+    brand: { select: { id: true, name: true } },
+    variants: { select: { sellingPrice: true, quantity: true } },
+};
+
+const detailSelect = {
+    id: true, name: true, slug: true, productDescription: true, longDescription: true,
+    audience: true, status: true, channel: true, isAvailable: true, hasVariants: true,
+    crossedPrice: true, sellingPrice: true, costPrice: true, quantity: true, weight: true,
+    sku: true, hsCode: true, altBarcode: true,
+    imageUrls: true, tags: true, releaseDate: true,
+    seoTitle: true, seoDescription: true, seoImage: true,
+    ratingAvg: true, ratingCount: true, createdAt: true, updatedAt: true,
+    brand: { select: { id: true, name: true, slug: true } },
+    categories: { select: { id: true, name: true, slug: true } },
+    similarProducts: { select: { id: true, name: true, slug: true, sellingPrice: true, imageUrls: true, status: true } },
+    variants: { select: variantSelect, orderBy: { createdAt: "asc" } },
+};
+
+// ---------- reference checks (tenant safety) ----------
+export const countStoreCategoriesModel = (storeId, ids) =>
+    prisma.category.count({ where: { storeId, id: { in: ids } } });
+
+export const countStoreProductsModel = (storeId, ids) =>
+    prisma.product.count({ where: { storeId, id: { in: ids } } });
+
+export const brandExistsModel = async (storeId, brandId) =>
+    (await prisma.brand.count({ where: { id: brandId, storeId } })) > 0;
+
+// SKUs already used in this store by products or variants.
+// `productId` excludes the product being edited and all of its variants.
+export const findTakenSkusModel = async (storeId, skus, { productId } = {}) => {
+    if (skus.length === 0) return [];
+
+    const [products, variants] = await Promise.all([
+        prisma.product.findMany({
+            where: { storeId, sku: { in: skus }, ...(productId && { id: { not: productId } }) },
+            select: { sku: true },
+        }),
+        prisma.productVariant.findMany({
+            where: { storeId, sku: { in: skus }, ...(productId && { productId: { not: productId } }) },
+            select: { sku: true },
+        }),
+    ]);
+
+    return [...new Set([...products, ...variants].map((r) => r.sku))];
+};
+
+// ---------- create ----------
+// P2002 = slug or sku already taken
+export const createProductModel = (storeId, { categoryIds, similarProductIds, variants, ...data }) => {
+    const hasVariants = variants.length > 0;
+
+    return prisma.product.create({
+        data: {
+            ...data,
+            storeId,
+            hasVariants,
+            quantity: hasVariants ? null : data.quantity ?? 0,
+            categories: { connect: connectIds(categoryIds) },
+            ...(similarProductIds.length > 0 && { similarProducts: { connect: connectIds(similarProductIds) } }),
+            ...(hasVariants && { variants: { create: variants } }), // storeId comes from the parent
+        },
         select: {
             id: true,
-            size: true,
-            stock: true,
-            sku: true,
-            createdAt: true,
-            updatedAt: true,
-        },
-        orderBy: { size: "asc" },
-    },
-};
-
-const SORT_MAPPING = {
-    newest: { createdAt: "desc" },
-    oldest: { createdAt: "asc" },
-    price_asc: { price: "asc" },
-    price_desc: { price: "desc" },
-    name_asc: { name: "asc" },
-};
-
-export const createProduct = async (data) => {
-    return await prisma.product.create({
-        data: {
-            shopId: data.shopId,
-            name: data.name,
-            description: toNull(data.description),
-            category: data.category,
-            status: data.status,
-            audience: data.audience,
-            price: data.price,
-            discountPrice: toNull(data.discountPrice),
-            image: toNull(data.image),
-            gallery: data.gallery ?? [],
-            variants: {
-                create: data.variants.map((item) => ({
-                    size: item.size,
-                    stock: item.stock,
-                    sku: toNull(item.sku),
-                })),
-            },
+            name: true,
+            slug: true
         },
     });
 };
 
-export const getProductById = async (shopId, productId) => {
-    const product = await prisma.product.findFirst({
-        where: { id: productId, shopId },
-        select: DETAIL_SELECT,
-    });
-
-    if (!product) return null;
-
-    return {
-        ...product,
-        price: product.price ? product.price.toString() : null,
-        discountPrice: product.discountPrice ? product.discountPrice.toString() : null,
-        totalStock: product.variants.reduce((total, variant) => total + variant.stock, 0),
-    };
-};
-
-// Everything the update/delete flows need from the existing row in ONE
-// relation-free read: the money fields for validation, and the stored image
-// URLs so the Cloudinary assets being dropped can be identified. Scoped by
-// shopId, so ownership is enforced by the query itself.
-export const getProductForUpdate = async (shopId, productId) => {
-    return await prisma.product.findFirst({
-        where: { id: productId, shopId },
-        select: { id: true, price: true, discountPrice: true, image: true, gallery: true },
-    });
-};
-
-// Order items hold a SNAPSHOT of the product image taken at purchase time. Once
-// the underlying asset is destroyed that snapshot URL is dead, so it is nulled
-// in the same flow that removes the image.
-export const clearOrderItemImagesForProduct = async (productId) => {
-    return await prisma.orderItem.updateMany({
-        where: { productId },
-        data: { image: null },
-    });
-};
-
-export const listProducts = async ({ shopId, page, limit, search, category, status, minPrice, maxPrice, sort, audience }) => {
-    const priceFilter = {};
-    if (minPrice !== undefined && minPrice !== null) {
-        priceFilter.gte = minPrice;
-    }
-    if (maxPrice !== undefined && maxPrice !== null) {
-        priceFilter.lte = maxPrice;
-    }
-
+// ---------- read ----------
+export const getProductsModel = async (storeId, { page, limit, search, status, channel, audience, brandId, categoryId, isAvailable }) => {
     const where = {
-        ...(shopId ? { shopId } : {}),
-        ...(status ? { status } : {}),
-        ...(category ? { category } : {}),
-        ...(audience ? { audience } : {}),
-        ...(search ? { name: { contains: search, mode: "insensitive" } } : {}),
-        ...(Object.keys(priceFilter).length > 0 ? { price: priceFilter } : {}),
+        storeId,
+        ...(status && { status }),
+        ...(channel && { channel }),
+        ...(audience && { audience }),
+        ...(brandId && { brandId }),
+        ...(categoryId && { categories: { some: { id: categoryId } } }),
+        ...(isAvailable !== undefined && { isAvailable }),
+        ...(search && {
+            OR: [
+                { name: { contains: search, mode: "insensitive" } },
+                { sku: { contains: search, mode: "insensitive" } },
+            ],
+        }),
     };
 
-    const orderBy = SORT_MAPPING[sort] ?? SORT_MAPPING.newest;
-
-    const [products, total] = await Promise.all([
+    // Two independent reads, so run them on separate connections at the same time
+    const [items, total] = await Promise.all([
         prisma.product.findMany({
             where,
-            orderBy,
+            select: listSelect,
+            orderBy: [{ createdAt: "desc" }, { id: "desc" }],
             skip: (page - 1) * limit,
             take: limit,
-            select: {
-                id: true,
-                shopId: true,
-                name: true,
-                category: true,
-                status: true,
-                audience: true,
-                price: true,
-                discountPrice: true,
-                image: true,
-                gallery: true,
-                createdAt: true,
-                updatedAt: true,
-                variants: {
-                    select: {
-                        id: true,
-                        size: true,
-                        stock: true,
-                        sku: true,
-                    },
-                    orderBy: { size: "asc" },
-                },
-            },
         }),
         prisma.product.count({ where }),
     ]);
 
-    const formattedProducts = products.map((product) => ({
-        ...product,
-        price: product.price ? product.price.toString() : null,
-        discountPrice: product.discountPrice ? product.discountPrice.toString() : null,
-        totalStock: product.variants.reduce((total, variant) => total + variant.stock, 0),
-    }));
-
-    return { products: formattedProducts, total };
+    return { items, total };
 };
 
-export const updateProductById = async (productId, data) => {
-    const variants = Array.isArray(data.variants)
-        ? {
-            deleteMany: {},
-            create: data.variants.map((item) => ({
-                size: item.size,
-                stock: item.stock,
-                sku: toNull(item.sku),
-            })),
-        }
-        : undefined;
+export const getProductByIdModel = (storeId, productId) =>
+    prisma.product.findUnique({ where: { id: productId, storeId }, select: detailSelect });
 
-    // The variants are replaced wholesale, so the response has to be re-read
-    // with the same select the detail endpoint uses. Returning the bare update
-    // result left `variants` undefined, which crashed the serializer in the
-    // service on every PATCH.
-    return await prisma.product.update({
-        where: { id: productId },
+// Light read before an update; each caller selects only what it needs
+export const getProductSnapshotModel = (storeId, productId, select) =>
+    prisma.product.findUnique({ where: { id: productId, storeId }, select });
+
+// ---------- update ----------
+// Used by general, custom, status and SEO. P2025 = not found, P2002 = slug taken
+export const updateProductModel = (storeId, productId, { categoryIds, similarProductIds, ...data }) =>
+    prisma.product.update({
+        where: { id: productId, storeId },
         data: {
-            ...(data.name !== undefined ? { name: data.name } : {}),
-            ...(data.description !== undefined ? { description: toNull(data.description) } : {}),
-            ...(data.category !== undefined ? { category: data.category } : {}),
-            ...(data.status !== undefined ? { status: data.status } : {}),
-            ...(data.audience !== undefined ? { audience: data.audience } : {}),
-            ...(data.price !== undefined ? { price: data.price } : {}),
-            ...(data.discountPrice !== undefined ? { discountPrice: toNull(data.discountPrice) } : {}),
-            ...(data.image !== undefined ? { image: toNull(data.image) } : {}),
-            ...(data.gallery !== undefined ? { gallery: data.gallery } : {}),
-            ...(variants ? { variants } : {}),
+            ...data, // undefined fields are skipped by Prisma
+            ...(categoryIds && { categories: { set: connectIds(categoryIds) } }),
+            ...(similarProductIds && { similarProducts: { set: connectIds(similarProductIds) } }),
         },
-        select: DETAIL_SELECT,
+        select: detailSelect,
     });
+
+// `variants` is undefined (leave alone) or [{ id?, data }] (the full desired list).
+// Everything runs as ONE batched transaction (a single round trip, no interactive-transaction timeout).
+// P2002 = sku taken, P2003 = a variant being deleted is used in orders
+export const updateInventoryModel = async (storeId, productId, { variants, ...data }) => {
+    const ops = [];
+
+    if (variants) {
+        const keepIds = variants.filter((v) => v.id).map((v) => v.id);
+        const toCreate = variants.filter((v) => !v.id).map((v) => ({ ...v.data, productId, storeId }));
+
+        // notIn: [] matches every variant, which is what "variants: []" needs
+        ops.push(prisma.productVariant.deleteMany({ where: { productId, storeId, id: { notIn: keepIds } } }));
+
+        for (const { id, data: variantData } of variants) {
+            if (id) ops.push(prisma.productVariant.update({ where: { id, productId, storeId }, data: variantData }));
+        }
+        if (toCreate.length > 0) ops.push(prisma.productVariant.createMany({ data: toCreate }));
+    }
+
+    // Last, so the returned product already reflects the variant changes
+    ops.push(prisma.product.update({ where: { id: productId, storeId }, data, select: detailSelect }));
+
+    const results = await prisma.$transaction(ops);
+    return results.at(-1);
 };
 
-export const deleteProductById = async (shopId, productId) => {
-    const product = await prisma.product.findFirst({
-        where: { id: productId, shopId },
-        select: { id: true },
+// ---------- delete ----------
+// P2025 = not found, P2003 = referenced by order items (depends on the OrderItem onDelete rule)
+export const deleteProductModel = (storeId, productId) =>
+    prisma.product.delete({
+        where: { id: productId, storeId },
+        select: { id: true, name: true, imageUrls: true, seoImage: true },
     });
 
-    if (!product) return null;
 
-    return await prisma.product.delete({
-        where: { id: product.id },
-        select: { id: true },
-    });
-};
-
-export const getProductsByName = async (shopId, name, excludeProductId = null) => {
-    return await prisma.product.findFirst({
-        where: {
-            shopId,
-            name: { equals: name, mode: "insensitive" },
-            // Prisma rejects a null filter value, so the exclusion is only
-            // applied on an update, where the product itself must not match.
-            ...(excludeProductId ? { id: { not: excludeProductId } } : {}),
-        },
-        select: { id: true, name: true },
-    });
+export const validateRefsAndSkusModel = async (storeId, { categoryIds = [], brandId = null, similarProductIds = [], skus = [], productId = null }) => {
+    const [row] = await prisma.$queryRaw`
+        SELECT
+            (SELECT COUNT(*)::int FROM categories
+                WHERE store_id = ${storeId} AND id = ANY(${categoryIds}::text[])) AS "categories",
+            (SELECT COUNT(*)::int FROM brands
+                WHERE store_id = ${storeId} AND id = ${brandId}::text) AS "brand",
+            (SELECT COUNT(*)::int FROM products
+                WHERE store_id = ${storeId} AND id = ANY(${similarProductIds}::text[])) AS "similar",
+            COALESCE((
+                SELECT array_agg(DISTINCT sku) FROM (
+                    SELECT sku FROM products
+                        WHERE store_id = ${storeId} AND sku = ANY(${skus}::text[])
+                          AND (${productId}::text IS NULL OR id <> ${productId}::text)
+                    UNION ALL
+                    SELECT sku FROM product_variants
+                        WHERE store_id = ${storeId} AND sku = ANY(${skus}::text[])
+                          AND (${productId}::text IS NULL OR product_id <> ${productId}::text)
+                ) t
+            ), '{}') AS "takenSkus"
+    `;
+    return row;
 };

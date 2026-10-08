@@ -167,3 +167,20 @@ export const prepareImage = async (value, current, storeId, kind) => {
   const file = await claimImage(value, storeId, kind);
   return { url: file.url, file };
 };
+
+
+// Pure string work, no network. Throws unless the URL is a fresh temp upload for this store and kind.
+export const planNewImage = (rawUrl, storeId, kind) => {
+    const parsed = parseImageUrl(rawUrl, storeId, kind);
+    if (!parsed?.isTemp) throw new AppError("Image must be freshly uploaded", constants.BadRequest);
+
+    const toId = parsed.publicId.replace(/^temp\//, "");
+    return {
+        // No /v123/ segment, so the URL keeps working after the rename
+        url: `https://res.cloudinary.com/${process.env.CLOUDINARY_CLOUD_NAME}/image/upload/${toId}.webp`,
+        move: { fromId: parsed.publicId, toId },
+    };
+};
+
+// publicId of any of our URLs (temp or permanent), or null
+export const publicIdOf = (url, storeId, kind) => (url ? parseImageUrl(url, storeId, kind)?.publicId ?? null : null);

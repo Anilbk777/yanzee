@@ -1,40 +1,49 @@
-import ApiResponse from "../../utils/apiResponse.js";
 import asyncHandler from "../../utils/asyncHandler.js";
+import ApiResponse from "../../utils/apiResponse.js";
 import {
     createProductService,
-    getProductByIdService,
-    listOwnerProductsService,
-    getPublicProductsService,
-    updateProductByIdService,
-    deleteProductByIdService,
+    getProductsService,
+    getProductService,
+    updateGeneralService,
+    updateInventoryService,
+    updateCustomService,
+    updateStatusService,
+    updateSeoService,
+    deleteProductService
 } from "./productService.js";
 
 export const createProductController = asyncHandler(async (req, res) => {
-    const result = await createProductService(req.shop, req.body);
-    ApiResponse(res, result);
+    ApiResponse(res, await createProductService(req.storeId, req.body));
 });
 
-export const getProductByIdController = asyncHandler(async (req, res) => {
-    const result = await getProductByIdService(req.shop, req.params.productId);
-    ApiResponse(res, result);
+export const getProductsController = asyncHandler(async (req, res) => {
+    ApiResponse(res, await getProductsService(req.storeId, req.validatedQuery));
 });
 
-export const listProductsController = asyncHandler(async (req, res) => {
-    const result = await listOwnerProductsService(req.shop, req.validatedQuery);
-    ApiResponse(res, result);
+export const getProductController = asyncHandler(async (req, res) => {
+    ApiResponse(res, await getProductService(req.storeId, req.params.productId));
 });
 
-export const updateProductByIdController = asyncHandler(async (req, res) => {
-    const result = await updateProductByIdService(req.shop, req.params.productId, req.body);
-    ApiResponse(res, result);
+export const updateGeneralController = asyncHandler(async (req, res) => {
+    ApiResponse(res, await updateGeneralService(req.storeId, req.params.productId, req.body));
 });
 
-export const deleteProductByIdController = asyncHandler(async (req, res) => {
-    const result = await deleteProductByIdService(req.shop, req.params.productId);
-    ApiResponse(res, result);
+export const updateInventoryController = asyncHandler(async (req, res) => {
+    ApiResponse(res, await updateInventoryService(req.storeId, req.params.productId, req.body));
 });
 
-export const getPublicProductsController = asyncHandler(async (req, res) => {
-    const result = await getPublicProductsService(req.validatedQuery);
-    ApiResponse(res, result);
+export const updateCustomController = asyncHandler(async (req, res) => {
+    ApiResponse(res, await updateCustomService(req.storeId, req.params.productId, req.body));
+});
+
+export const updateStatusController = asyncHandler(async (req, res) => {
+    ApiResponse(res, await updateStatusService(req.storeId, req.params.productId, req.body));
+});
+
+export const updateSeoController = asyncHandler(async (req, res) => {
+    ApiResponse(res, await updateSeoService(req.storeId, req.params.productId, req.body));
+});
+
+export const deleteProductController = asyncHandler(async (req, res) => {
+    ApiResponse(res, await deleteProductService(req.storeId, req.params.productId));
 });
