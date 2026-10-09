@@ -1,3 +1,4 @@
+import "dotenv/config";
 import { Worker } from "bullmq";
 import { redisConnection } from "../../config/redisConfig.js";
 import { cloudStorage as cloudinary } from "../../config/cloudinaryConfig.js"
@@ -6,6 +7,7 @@ import logger from "../../utils/logger.js";
 const connection = redisConnection;
 
 export const moveImage = async ({ fromId, toId }) => {
+    logger.info("From worker moving started")
     try {
         await cloudinary.uploader.rename(fromId, toId, { overwrite: false, invalidate: true });
     } catch (error) {
@@ -18,6 +20,7 @@ export const moveImage = async ({ fromId, toId }) => {
 };
 
 const processor = async ({ name, data }) => {
+    logger.info("from worker processor...")
     if (name === "move") return moveImage(data);
 
     if (name === "delete") {
@@ -29,7 +32,11 @@ const processor = async ({ name, data }) => {
     }
 };
 
-const worker = new Worker("images", processor, { connection, concurrency: 10 });
+const worker = new Worker("imagesQueue", processor, { connection, concurrency: 10 });
+
+worker.on("ready", () => logger.info("Worker ready, waiting for jobs"));
+worker.on("active", (job) => logger.info({ id: job.id, name: job.name }, "Job active"));
+worker.on("completed", (job) => logger.info({ id: job.id }, "Job completed"));
 
 worker.on("failed", (job, err) => {
     const final = job.attemptsMade >= (job.opts.attempts ?? 1);

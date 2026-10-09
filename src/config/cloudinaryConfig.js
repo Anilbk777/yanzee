@@ -1,17 +1,19 @@
-import { v2 as cloudinary } from 'cloudinary';
+import "dotenv/config";
+import { v2 as cloudinary } from "cloudinary";
+import logger from "../utils/logger.js";
 
-import logger from '../utils/logger.js';
+cloudinary.config({
+    cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+    api_key: process.env.CLOUDINARY_API_KEY,
+    api_secret: process.env.CLOUDINARY_API_SECRET,
+    secure: true,
+});
 
-let cloudStorage;
-const initCloudinary = () => {
-    cloudStorage = cloudinary.config({
-        cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
-        api_key: process.env.CLOUDINARY_API_KEY,
-        api_secret: process.env.CLOUDINARY_API_SECRET,
-        secure: true,
-    });
-    logger.info('Cloudinary connected');
+logger.info("Cloudinary configured");
+
+export const cloudStorage = cloudinary;
+export const initCloudinary = async () => {
+    await cloudinary.api.ping(); // throws if the credentials are wrong
+    logger.info("Cloudinary connected");
 };
-
-export { cloudStorage };
-export default initCloudinary;
+export default cloudinary;

@@ -8,18 +8,19 @@ export const imageQueue = new Queue("imagesQueue", {
         attempts: 8,
         backoff: { type: "exponential", delay: 2000 },
         removeOnComplete: true,
-        removeOnFail: 1000, 
+        removeOnFail: 1000,
     },
 });
 
 const safe = (id) => id.replaceAll("/", "_");
 
 // moves: [{ fromId, toId }]. The same job id means no duplicates.
-export const enqueueMoves = (moves) =>
-    imageQueue.addBulk(
+export const enqueueMoves = async (moves) => {
+    console.log("1.Image processing start");
+    await imageQueue.addBulk(
         moves.map((m) => ({ name: "move", data: m, opts: { jobId: `move_${safe(m.toId)}` } }))
     );
-
+}
 // Delete files. Delayed by default so an in-flight move finishes first and can't recreate the file.
 export const enqueueDeletes = async (publicIds, { delay = 30_000 } = {}) => {
     if (publicIds.length === 0) return;
