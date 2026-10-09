@@ -24,6 +24,7 @@ const processor = async ({ name, data }) => {
     if (name === "move") return moveImage(data);
 
     if (name === "delete") {
+        logger.info("deleting images started...")
         await Promise.all(
             data.publicIds.map((id) =>
                 cloudinary.uploader.destroy(id, { invalidate: true, resource_type: "image" })

@@ -7,7 +7,6 @@ import {
   validateRealFileType,
   uploadTempImage,
   uploadImage,
-  deleteImageByUrl
 } from "../../utils/imageUpload.js";
 
 

@@ -11,7 +11,8 @@ import {
 } from "./storeModel.js";
 
 import {
-    deleteImageByUrl
+    publicIdOf,
+    dispatchDeletes
 } from "../../utils/imageUpload.js";
 
 
@@ -116,9 +117,10 @@ const deleteStoreService = async (userId, storeId) => {
     logger.info({ userId, storeId }, "deleting store");
 
     const deletedStore = await deleteStoreModel(userId, storeId);
-    if (deletedStore.logo) {
-        await deleteImageByUrl(deletedStore.logo, storeId, "logos");
-    }
+    dispatchDeletes([
+        publicIdOf(deleted.logo, storeId, "logos"),
+        publicIdOf(deleted.seoImage, storeId, "store-seo"),
+    ]);
 
     logger.info({ userId, storeId }, "Store deleted successfully");
     return {
@@ -130,7 +132,7 @@ const deleteStoreService = async (userId, storeId) => {
 
 const togglePublishService = async (userId, store) => {
     logger.info({ userId, storeId: store.id }, "Toggling store publish");
-    const updatedStore = await updateStoreDetailModel(userId,store.id, { isPublished: !store.isPublished });
+    const updatedStore = await updateStoreDetailModel(userId, store.id, { isPublished: !store.isPublished });
     logger.info({ userId, storeId: store.id, isPublished: updatedStore.isPublished }, "Store toggled successfully");
     return {
         statusCode: 200,

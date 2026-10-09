@@ -103,6 +103,7 @@ const generalShape = {
     productDescription: nullableText(500, "Description cannot exceed 500 characters"),
     longDescription: nullableText(10000, "Long description cannot exceed 10000 characters"),
     imageUrls: uniqueArray(imageUrl, { max: 10, label: "images" }),
+
 };
 
 const baseShape = { sellingPrice: sellingPrice.optional(), ...inventoryShape };
@@ -174,7 +175,7 @@ export const CreateProductSchema = z
 
 
 // ---------- the 5 update schemas ----------
-export const UpdateGeneralSchema = z.object({ ...generalShape, slug }).partial().superRefine(atLeastOne);
+export const UpdateGeneralSchema = z.object({ ...generalShape, ...availabilityShape, slug }).partial().superRefine(atLeastOne);
 
 export const UpdateInventorySchema = z
     .object({

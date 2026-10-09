@@ -2,15 +2,10 @@ import logger from "../../utils/logger.js";
 import AppError from "../../utils/AppError.js";
 import constants from "../../utils/constants.js";
 import { slugify, randomSuffix } from "../../utils/slug.js";
-import { revertImage, deleteImageByUrl, prepareImage, claimImage } from "../../utils/imageUpload.js";
+import { planNewImage, planImageField, publicIdOf, dispatchMoves, dispatchDeletes } from "../../utils/imageUpload.js";
 import {
-    createBrandModel,
-    getBrandsModel,
-    getBrandByIdModel,
-    updateBrandModel,
-    setBrandAvailabilityModel,
-    deleteBrandModel,
-    countBrandProductsModel,
+    createBrandModel, getBrandsModel, getBrandByIdModel, updateBrandModel,
+    setBrandAvailabilityModel, deleteBrandModel, countBrandProductsModel,
 } from "./brandModel.js";
 
 const SLUG_MAX_ATTEMPTS = 3;
@@ -25,40 +20,31 @@ export const createBrandService = async (storeId, payload) => {
 
     logger.info({ storeId }, "Attempting to create brand");
 
-    let logoFile = null;
-    let seoFile = null;
+    // Instant string work. Throws a 400 before any DB call if a URL is invalid.
+    const logoPlan = logo ? planNewImage(logo, storeId, "brands") : null;
+    const seoPlan = seoImage ? planNewImage(seoImage, storeId, "brand-seo") : null;
+    const moves = [logoPlan?.move, seoPlan?.move].filter(Boolean);
 
-    try {
-        if (logo) logoFile = await claimImage(logo, storeId, "brands");
-        if (seoImage) seoFile = await claimImage(seoImage, storeId, "seo");
+    for (let attempt = 1; attempt <= SLUG_MAX_ATTEMPTS; attempt++) {
+        const slug = attempt === 1 ? baseSlug : `${baseSlug}-${randomSuffix()}`;
+        try {
+            const brand = await createBrandModel(storeId, {
+                name, slug, description, seoTitle, isAvailable,
+                logo: logoPlan?.url ?? null,
+                seoImage: seoPlan?.url ?? null,
+            });
 
-        for (let attempt = 1; attempt <= SLUG_MAX_ATTEMPTS; attempt++) {
-            const slug = attempt === 1 ? baseSlug : `${baseSlug}-${randomSuffix()}`;
-            try {
-                const brand = await createBrandModel(storeId, {
-                    name,
-                    slug,
-                    description,
-                    seoTitle,
-                    isAvailable,
-                    logo: logoFile?.url ?? null,
-                    seoImage: seoFile?.url ?? null,
-                });
+            dispatchMoves(moves); // the worker renames the files, the response doesn't wait
 
-                logger.info({ storeId, brandId: brand.id }, "Brand created successfully");
-
-                return { statusCode: 201, message: "Brand created successfully", data: { brand } };
-            } catch (error) {
-                if (!isUniqueViolation(error)) throw error;
-                logger.warn({ storeId, slug, attempt }, "Brand slug collision, retrying");
-            }
+            logger.info({ storeId, brandId: brand.id }, "Brand created successfully");
+            return { statusCode: 201, message: "Brand created successfully", data: { brand } };
+        } catch (error) {
+            if (!isUniqueViolation(error)) throw error;
+            logger.warn({ storeId, slug, attempt }, "Brand slug collision, retrying");
         }
-
-        throw new AppError("Could not generate a unique slug, please try again", constants.Conflict);
-    } catch (error) {
-        await Promise.all([revertImage(logoFile), revertImage(seoFile)]);
-        throw error;
     }
+
+    throw new AppError("Could not generate a unique slug, please try again", constants.Conflict);
 };
 
 export const getBrandsService = async (storeId, query) => {
@@ -70,12 +56,7 @@ export const getBrandsService = async (storeId, query) => {
         message: "Brands fetched successfully",
         data: {
             brands: items,
-            pagination: {
-                page: query.page,
-                limit: query.limit,
-                total,
-                totalPages: Math.ceil(total / query.limit),
-            },
+            pagination: { page: query.page, limit: query.limit, total, totalPages: Math.ceil(total / query.limit) },
         },
     };
 };
@@ -88,41 +69,38 @@ export const getBrandService = async (storeId, brandId) => {
 };
 
 export const updateBrandService = async (storeId, brandId, payload) => {
-    logger.info({ storeId, brandId }, "updating brand");
-    const existing = await getBrandByIdModel(storeId, brandId);
-    if (!existing) throw new AppError("Brand not found", constants.NotFound);
+    logger.info({ storeId, brandId }, "Updating brand");
 
     const { logo, seoImage, ...rest } = payload;
 
-    let newLogo = { url: undefined, file: null };
-    let newSeo = { url: undefined, file: null };
+    // Only read the brand when an image is part of the request. Otherwise P2025 gives the 404.
+    const needsExisting = logo !== undefined || seoImage !== undefined;
+    const existing = needsExisting ? await getBrandByIdModel(storeId, brandId) : null;
+    if (needsExisting && !existing) throw new AppError("Brand not found", constants.NotFound);
 
+    // Plan everything before the DB write (throws a 400 on a bad URL)
+    const logoPlan = planImageField(logo, existing?.logo, storeId, "brands");
+    const seoPlan = planImageField(seoImage, existing?.seoImage, storeId, "brand-seo");
+
+    let brand;
     try {
-        newLogo = await prepareImage(logo, existing.logo, storeId, "brands");
-        newSeo = await prepareImage(seoImage, existing.seoImage, storeId, "seo");
-
-        const brand = await updateBrandModel(storeId, brandId, {
+        brand = await updateBrandModel(storeId, brandId, {
             ...rest,
-            logo: newLogo.url,       // undefined is skipped by Prisma
-            seoImage: newSeo.url,
+            logo: logoPlan.url,        // undefined is skipped by Prisma, null removes
+            seoImage: seoPlan.url,
         });
-
-        // DB succeeded, so delete the replaced or removed files (best effort)
-        if (newLogo.url !== undefined) deleteImageByUrl(existing.logo, storeId, "brands");
-        if (newSeo.url !== undefined) deleteImageByUrl(existing.seoImage, storeId, "seo");
-
-        logger.info({ storeId, brandId }, "Brand updated successfully");
-
-        return { statusCode: 200, message: "Brand updated successfully", data: { brand } };
     } catch (error) {
-        await Promise.all([revertImage(newLogo.file), revertImage(newSeo.file)]);
-
-        if (isUniqueViolation(error)) {
-            throw new AppError("Slug already exists. Please choose a different slug", constants.Conflict);
-        }
+        if (isUniqueViolation(error)) throw new AppError("Slug already exists. Please choose a different slug", constants.Conflict);
         if (isNotFound(error)) throw new AppError("Brand not found", constants.NotFound);
         throw error;
     }
+
+    // DB succeeded: the worker moves the new files and deletes the replaced or removed ones
+    dispatchMoves([logoPlan.move, seoPlan.move].filter(Boolean));
+    dispatchDeletes([logoPlan.removedId, seoPlan.removedId]);
+
+    logger.info({ storeId, brandId }, "Brand updated successfully");
+    return { statusCode: 200, message: "Brand updated successfully", data: { brand } };
 };
 
 export const setBrandAvailabilityService = async (storeId, brandId) => {
@@ -136,7 +114,6 @@ export const setBrandAvailabilityService = async (storeId, brandId) => {
         message: `Brand turned ${!existing.isAvailable ? "on" : "off"} successfully`,
         data: { brand },
     };
-
 };
 
 export const deleteBrandService = async (storeId, brandId) => {
@@ -150,7 +127,6 @@ export const deleteBrandService = async (storeId, brandId) => {
 
         if (isForeignKeyViolation(error)) {
             const count = await countBrandProductsModel(brandId);
-
             logger.warn({ storeId, brandId, count }, "Brand delete blocked by products");
 
             throw new AppError(
@@ -163,13 +139,12 @@ export const deleteBrandService = async (storeId, brandId) => {
         throw error;
     }
 
-    // DB delete succeeded, so clean up the files (best effort, doesn't block the response)
-    let tasks = [];
-    if (deleted.logo) tasks.push(deleteImageByUrl(deleted.logo, storeId, "brands"));
-    if (deleted.seoImage) tasks.push(deleteImageByUrl(deleted.seoImage, storeId, "seo"));
-    await Promise.all(tasks);
+    // DB delete succeeded: the worker deletes the files
+    dispatchDeletes([
+        publicIdOf(deleted.logo, storeId, "brands"),
+        publicIdOf(deleted.seoImage, storeId, "brand-seo"),
+    ]);
 
     logger.info({ storeId, brandId }, "Brand deleted successfully");
-
     return { statusCode: 200, message: "Brand deleted successfully", data: { id: deleted.id, name: deleted.name } };
 };

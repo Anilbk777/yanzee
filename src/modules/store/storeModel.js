@@ -54,5 +54,5 @@ export const updateStoreDetailModel = (userId, storeId, data) =>
 export const deleteStoreModel = (userId, storeId) =>
     prisma.store.delete({
         where: { id: storeId, members: { some: { userId } } },
-        select: { id: true, name: true },
+        select: { id: true, name: true, logo: true, seoImage: true },
     });

@@ -2,15 +2,12 @@ import logger from "../../utils/logger.js";
 import AppError from "../../utils/AppError.js";
 import constants from "../../utils/constants.js";
 import { slugify, randomSuffix } from "../../utils/slug.js";
-import { claimImage, revertImage, deleteImageByUrl, prepareImage,planNewImage } from "../../utils/imageUpload.js";
+import {planNewImage, publicIdOf, dispatchMoves, dispatchDeletes,planImageField } from "../../utils/imageUpload.js";
 import { BASE_ONLY_FIELDS } from "./productValidation.js";
 import {
-    countStoreCategoriesModel, countStoreProductsModel, brandExistsModel, findTakenSkusModel,
     createProductModel, getProductsModel, getProductByIdModel, getProductSnapshotModel,
-    updateProductModel, updateInventoryModel, deleteProductModel,validateRefsAndSkusModel
+    updateProductModel, updateInventoryModel, deleteProductModel, validateRefsAndSkusModel
 } from "./productModel.js";
-import { enqueueMoves, logQueueFailure } from "../../jobs/queue/imageQueue.js";
-
 
 const SLUG_MAX_ATTEMPTS = 3;
 
@@ -80,79 +77,17 @@ const toListItem = ({ variants, ...product }) => {
 
 const ok = (message, product) => ({ statusCode: 200, message, data: { product } });
 
-// ---------- validation helpers ----------
-// All checks hit the database independently, so they run at the same time
-const assertStoreRefs = async (storeId, { categoryIds, brandId, similarProductIds, productId }) => {
-    if (productId && similarProductIds?.includes(productId)) {
-        throw new AppError("A product can't be similar to itself", constants.BadRequest);
-    }
-    logger.info(".Asserting store refs")
-
-    const [categoryCount, brandOk, similarCount] = await Promise.all([
-        categoryIds ? countStoreCategoriesModel(storeId, categoryIds) : null,
-        brandId ? brandExistsModel(storeId, brandId) : null,
-        similarProductIds?.length ? countStoreProductsModel(storeId, similarProductIds) : null,
-    ]);
-
-    if (categoryCount !== null && categoryCount !== categoryIds.length) {
-        throw new AppError("One or more categories are invalid", constants.BadRequest);
-    }
-    if (brandId && !brandOk) throw new AppError("Brand not found", constants.BadRequest);
-    if (similarCount !== null && similarCount !== similarProductIds.length) {
-        throw new AppError("One or more similar products are invalid", constants.BadRequest);
-    }
-    logger.info("Asserting store refs passed")
-};
-
-const assertSkusFree = async (storeId, skus, exclude) => {
-    logger.info("Asserting skus free")
-    const taken = await findTakenSkusModel(storeId, skus.filter(Boolean), exclude);
-    if (taken.length > 0) throw new AppError(`SKU already exists: ${taken.join(", ")}`, constants.Conflict);
-};
-
 const assertCrossedPrice = (crossed, selling) => {
     if (crossed != null && selling != null && crossed < selling) {
         throw new AppError("Crossed price must be greater than or equal to the selling price", constants.BadRequest);
     }
 };
-
-// ---------- image helpers ----------
-const revertAll = (files) => Promise.all(files.map((file) => revertImage(file)));
-
-// Claims every temp image in parallel. If any fails, the ones already moved are put back.
-const claimImages = async (urls, storeId) => {
-    const results = await Promise.allSettled(urls.map((url) => claimImage(url, storeId, "products")));
-    const failed = results.find((r) => r.status === "rejected");
-
-    if (failed) {
-        await revertAll(results.filter((r) => r.status === "fulfilled").map((r) => r.value));
-        throw failed.reason;
-    }
-    return results.map((r) => r.value);
-};
-
-// Keeps existing URLs, claims new temp ones, reports which ones were removed
-const planImages = async (urls, current, storeId) => {
-    if (!urls) return { finalUrls: undefined, newFiles: [], removedUrls: [] };
-
-    const fresh = urls.filter((url) => !current.includes(url));
-    const newFiles = await claimImages(fresh, storeId);
-    const claimed = new Map(fresh.map((url, i) => [url, newFiles[i].url]));
-
-    return {
-        finalUrls: urls.map((url) => claimed.get(url) ?? url),
-        newFiles,
-        removedUrls: current.filter((url) => !urls.includes(url)),
-    };
-};
-
 // ---------- write helpers ----------
-// Runs a DB write; on failure puts claimed images back in temp/ and maps the error
-const guarded = async (write, { files = [], fkMessage } = {}) => {
+// Runs a DB write and maps Prisma errors to AppErrors
+const guarded = async (write, { fkMessage } = {}) => {
     try {
         return await write();
     } catch (error) {
-        await revertAll(files);
         throw mapWriteError(error, fkMessage);
     }
 };
@@ -179,14 +114,6 @@ const checkRefs = async (storeId, { categoryIds, brandId, similarProductIds = []
     if (r.takenSkus.length > 0) throw new AppError(`SKU already exists: ${r.takenSkus.join(", ")}`, constants.Conflict);
 };
 
-// Queue the moves. If Redis is down, run them in-process so the files still get moved.
-const dispatchMoves = (moves) => {
-    if (moves.length === 0) return;
-    enqueueMoves(moves).catch((err) => {
-        logQueueFailure(err, "move");
-        Promise.all(moves.map(moveImage)).catch((e) => logger.error({ err: e }, "Inline move failed"));
-    });
-};
 // ====================== CREATE ======================
 
 export const createProductService = async (storeId, payload) => {
@@ -256,25 +183,46 @@ export const updateGeneralService = async (storeId, productId, payload) => {
 
     const { categoryIds, imageUrls, ...rest } = payload;
 
-    // The product is only read when images change. Otherwise the update itself returns P2025 (404).
     const [existing] = await Promise.all([
         imageUrls ? loadProduct(storeId, productId, { id: true, imageUrls: true }) : null,
-        assertStoreRefs(storeId, { categoryIds, brandId: rest.brandId }),
+        checkRefs(storeId, { categoryIds, brandId: rest.brandId }),
     ]);
 
-    const { finalUrls, newFiles, removedUrls } = await planImages(imageUrls, existing?.imageUrls ?? [], storeId);
+    let finalUrls;      // undefined = images untouched
+    let moves = [];
+    let removedIds = [];
 
-    const product = await guarded(
-        () => updateProductModel(storeId, productId, { ...rest, categoryIds, imageUrls: finalUrls }),
-        { files: newFiles }
+    if (imageUrls) {
+        const current = existing.imageUrls;
+        const currentSet = new Set(current);
+        const nextSet = new Set(imageUrls);
+
+        // Case 2 and 3: URLs that aren't already on the product must be fresh temp uploads
+        const plans = new Map(
+            imageUrls.filter((url) => !currentSet.has(url)).map((url) => [url, planNewImage(url, storeId, "products")])
+        );
+
+        finalUrls = imageUrls.map((url) => plans.get(url)?.url ?? url); // kept URLs stay as they are
+        moves = [...plans.values()].map((p) => p.move);
+
+        // Case 1 and 3: existing URLs that are no longer in the list
+        removedIds = current
+            .filter((url) => !nextSet.has(url))
+            .map((url) => publicIdOf(url, storeId, "products"))
+            .filter(Boolean);
+    }
+
+    const product = await guarded(() =>
+        updateProductModel(storeId, productId, { ...rest, categoryIds, imageUrls: finalUrls })
     );
 
-    // DB succeeded, so delete removed files (outside guarded, so it can never trigger a revert)
-    await Promise.all(removedUrls.map((url) => deleteImageByUrl(url, storeId, "products")));
+    // DB succeeded: hand the file work to the worker and respond immediately
+    dispatchMoves(moves);
+    dispatchDeletes(removedIds);
+    logger.info({ storeId, productId }, "Product general info updated")
 
     return ok("Product updated successfully", product);
 };
-
 // ====================== 2. VARIANTS AND INVENTORY ======================
 export const updateInventoryService = async (storeId, productId, payload) => {
     logger.info({ storeId, productId }, "Updating product inventory");
@@ -288,7 +236,7 @@ export const updateInventoryService = async (storeId, productId, payload) => {
         loadProduct(storeId, productId, {
             id: true, hasVariants: true, sellingPrice: true, crossedPrice: true, variants: { select: { id: true } },
         }),
-        assertSkusFree(storeId, skus, { productId }),
+        checkRefs(storeId, { skus, productId }),
     ]);
 
     const toBase = variants?.length === 0 && existing.hasVariants;
@@ -351,8 +299,7 @@ export const updateInventoryService = async (storeId, productId, payload) => {
 export const updateCustomService = async (storeId, productId, payload) => {
     logger.info({ storeId, productId }, "Updating product custom fields");
 
-    await assertStoreRefs(storeId, { similarProductIds: payload.similarProductIds, productId });
-
+    await checkRefs(storeId, { similarProductIds: payload.similarProductIds, productId });
     // No pre-read: a missing product comes back as P2025 (404)
     const product = await guarded(() => updateProductModel(storeId, productId, payload));
     return ok("Product updated successfully", product);
@@ -372,18 +319,18 @@ export const updateSeoService = async (storeId, productId, payload) => {
 
     const { seoImage, ...rest } = payload;
 
-    // The current image is only needed when the SEO image is part of the request
-    const existing = seoImage !== undefined ? await loadProduct(storeId, productId, { id: true, seoImage: true }) : null;
+    const existing = seoImage !== undefined
+        ? await loadProduct(storeId, productId, { id: true, seoImage: true })
+        : null;
 
-    // undefined = unchanged, null = remove, string = replace
-    const img = await prepareImage(seoImage, existing?.seoImage, storeId, "seo");
+    const seo = planImageField(seoImage, existing?.seoImage, storeId, "product-seo");
 
-    const product = await guarded(
-        () => updateProductModel(storeId, productId, { ...rest, seoImage: img.url }),
-        { files: [img.file] }
+    const product = await guarded(() =>
+        updateProductModel(storeId, productId, { ...rest, seoImage: seo.url })
     );
 
-    if (img.url !== undefined && existing?.seoImage) await deleteImageByUrl(existing.seoImage, storeId, "seo");
+    dispatchMoves(seo.move ? [seo.move] : []);
+    dispatchDeletes([seo.removedId]);
 
     return ok("Product SEO updated successfully", product);
 };
@@ -396,11 +343,12 @@ export const deleteProductService = async (storeId, productId) => {
         fkMessage: "This product can't be deleted because it is part of existing orders. Set its status to ARCHIVED instead.",
     });
 
-    // DB delete succeeded, so remove every file in parallel
-    await Promise.all([
-        ...deleted.imageUrls.map((url) => deleteImageByUrl(url, storeId, "products")),
-        deleteImageByUrl(deleted.seoImage, storeId, "seo"),
-    ]);
+    const ids = [
+        ...deleted.imageUrls.map((url) => publicIdOf(url, storeId, "products")),
+        publicIdOf(deleted.seoImage, storeId, "product-seo"),
+    ].filter(Boolean);
+
+    dispatchDeletes(ids); // worker deletes them, the response doesn't wait
 
     logger.info({ storeId, productId }, "Product deleted successfully");
     return { statusCode: 200, message: "Product deleted successfully", data: { id: deleted.id, name: deleted.name } };

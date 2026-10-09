@@ -135,7 +135,9 @@ export const updateProductModel = (storeId, productId, { categoryIds, similarPro
             ...(categoryIds && { categories: { set: connectIds(categoryIds) } }),
             ...(similarProductIds && { similarProducts: { set: connectIds(similarProductIds) } }),
         },
-        select: detailSelect,
+        select: {
+            id: true, name: true, slug: true,
+        },
     });
 
 // `variants` is undefined (leave alone) or [{ id?, data }] (the full desired list).
@@ -158,7 +160,7 @@ export const updateInventoryModel = async (storeId, productId, { variants, ...da
     }
 
     // Last, so the returned product already reflects the variant changes
-    ops.push(prisma.product.update({ where: { id: productId, storeId }, data, select: detailSelect }));
+    ops.push(prisma.product.update({ where: { id: productId, storeId }, data, select: { id: true, name: true } }));
 
     const results = await prisma.$transaction(ops);
     return results.at(-1);
