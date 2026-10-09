@@ -10,12 +10,12 @@ const authenticateUser = async (req, res, next) => {
             throw new AppError("Unauthorized access", constants.Unauthorized);
         }
         const decoded = jwt.verify(token, process.env.JWT_ACCESS_TOKEN_SECRET);
-        const user = await getUserById(decoded.id);
-        if (!user || !user.isActive) {
+        // const user = await getUserById(decoded.id);
+        if (!decoded.isActive) {
             throw new AppError("Unauthorized access", constants.Unauthorized);
         }
-        req.userId = user.id;
-        req.user = user;
+        req.userId = decoded.id;
+        req.user = decoded;
         next();
     } catch (error) {
         next(error);

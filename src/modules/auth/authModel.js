@@ -21,7 +21,8 @@ export const getUserByEmail = async (email) => {
             email: true,
             phone: true,
             password: true,
-            role: true
+            role: true,
+            isActive: true
         }
     })
 }

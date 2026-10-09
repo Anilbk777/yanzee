@@ -145,7 +145,13 @@ const meService = async (user) => {
     return {
         statusCode: 200,
         message: "User profile fetched successfully",
-        data: user
+        data: {
+            id: user.id,
+            fullName: user.fullName,
+            email: user.email,
+            phone: user.phone,
+            role: user.role
+        }
     }
 }
 
