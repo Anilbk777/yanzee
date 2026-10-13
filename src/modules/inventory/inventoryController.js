@@ -1,5 +1,5 @@
 import asyncHandler from "../../utils/asyncHandler.js";
-import ApiResponse from "../../utils/ApiResponse.js";
+import ApiResponse from "../../utils/apiResponse.js";
 import { stockInService,getMovementsService ,getStockService } from "./inventoryService.js";
 
 export const stockInController = asyncHandler(async (req, res) => {

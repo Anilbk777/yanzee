@@ -1,5 +1,5 @@
 import asyncHandler from "../../utils/asyncHandler.js";
-import ApiResponse from "../../utils/ApiResponse.js";
+import ApiResponse from "../../utils/apiResponse.js";
 import * as service from "./outletService.js";
 
 export const createOutletController = asyncHandler(async (req, res) => {
