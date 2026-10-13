@@ -1,0 +1,29 @@
+// ============================================================================
+// OUTLETS
+// A "Main Outlet" is created in the SAME transaction as the store.
+// ONLINE ORDERS ARE FULFILLED FROM THE MAIN OUTLET.
+// ============================================================================
+
+model Outlet {
+  id            String   @id @default(uuid())
+  storeId       String   @map("store_id")
+  store         Store    @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  name          String
+  address       String
+  contactPerson String?  @map("contact_person")
+  contactPhone  String?  @map("contact_phone")
+  isMain        Boolean  @default(false) @map("is_main")
+  isActive      Boolean  @default(true) @map("is_active")
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  stocks         OutletStock[]
+  batches        StockBatch[]
+  movements      StockMovement[] @relation("MovementOutlet")
+  otherMovements StockMovement[] @relation("MovementOtherOutlet")
+  orders         Order[]
+
+  @@unique([storeId, name])
+  @@index([storeId, isActive])
+  @@map("outlets")
+}

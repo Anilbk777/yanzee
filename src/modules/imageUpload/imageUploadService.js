@@ -51,6 +51,7 @@ const uploadImageService = async (file, storeId, entityType) => {
     statusCode: 200,
     message: "Image uploaded successfully",
     data: { url: result.secure_url },
+    // data: { url: result.secure_url, processed: result.eager?.[0]?.secure_url },
   };
 };
 

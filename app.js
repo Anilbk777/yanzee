@@ -13,7 +13,9 @@ import brandRouter from "./src/modules/brand/brandRoute.js";
 import productRouter from "./src/modules/product/productRoute.js";
 // import orderRouter from "./src/modules/orders/orderRoute.js";
 // import cartRouter from "./src/modules/cart/cartRoute.js";
-import imageRouter from "./src/modules/imageUpload/imageUploadRoute.js"
+import imageRouter from "./src/modules/imageUpload/imageUploadRoute.js";
+import outletRouter from "./src/modules/outlet/outletRoute.js";
+import inventoryRouter from "./src/modules/inventory/inventoryRoute.js";
 
 const app = express();
 
@@ -37,7 +39,10 @@ app.use(`${apiPrefix}/brands`, brandRouter);
 app.use(`${apiPrefix}/products`, productRouter);
 // app.use(`${apiPrefix}/orders`, orderRouter);
 // app.use(`${apiPrefix}/carts`, cartRouter);
-app.use(`${apiPrefix}/images`, imageRouter)
+app.use(`${apiPrefix}/images`, imageRouter);
+app.use(`${apiPrefix}/outlets`, outletRouter);
+app.use(`${apiPrefix}/inventory`, inventoryRouter);
+
 
 app.get("/", (req, res) => {
     res.status(200).json({ success: true, statusCode: 200, message: "welcome to yanzee backend" })

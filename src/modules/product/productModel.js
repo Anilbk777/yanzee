@@ -14,9 +14,9 @@ const variantSelect = {
 const listSelect = {
     id: true, name: true, slug: true, status: true, channel: true, audience: true,
     isAvailable: true, hasVariants: true, sellingPrice: true, crossedPrice: true,
-    quantity: true, imageUrls: true, createdAt: true,
+    quantity: true, imageUrls: true, createdAt: true, stockStatus: true,
     brand: { select: { id: true, name: true } },
-    variants: { select: { sellingPrice: true, quantity: true } },
+    variants: { select: { sellingPrice: true, quantity: true, stockStatus: true } },
 };
 
 const detailSelect = {

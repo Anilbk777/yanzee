@@ -1,0 +1,196 @@
+enum StockStatus {
+  IN_STOCK
+  LOW_STOCK
+  OUT_OF_STOCK
+}
+
+enum MovementType {
+  STOCK_IN // received from a supplier
+  STOCK_OUT // sold (website order or POS sale)
+  STOCK_RESTORE // order declined / cancelled / payment failed / POS refund: units put back
+  TRANSFER_OUT // left this outlet for another outlet
+  TRANSFER_IN // arrived at this outlet from another outlet
+  WRITE_OFF // removed: expired, damaged, lost
+  ADJUSTMENT // a correction, + or -: a mistake made when entering stock, or a stock-take count
+}
+
+// ============================================================================
+// OUTLET STOCK: the live numbers per outlet.  POS = a query on this table.
+// ============================================================================
+model OutletStock {
+  id       String @id @default(uuid())
+  storeId  String @map("store_id")
+  store    Store  @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  outletId String @map("outlet_id")
+  outlet   Outlet @relation(fields: [outletId], references: [id], onDelete: Cascade)
+ 
+  productId String          @map("product_id")
+  product   Product         @relation(fields: [productId, storeId], references: [id, storeId], onDelete: Cascade)
+  variantId String?         @map("variant_id") // NULL when the product has no variants
+  variant   ProductVariant? @relation(fields: [variantId], references: [id], onDelete: Cascade)
+ 
+  // = variantId, or productId when there is no variant. One plain key so the pair
+  // (outlet, item) can be UNIQUE and updated safely with upsert. The code sets it;
+  // the database double-checks it (see CHECK in the migration SQL).
+  itemKey String @map("item_key")
+ 
+  quantity        Int @default(0) // units that can be SOLD now (not expired)
+  expiredQuantity Int @default(0) @map("expired_quantity") // units on the shelf that are expired, waiting for a write-off
+  stockStatus     StockStatus @default(OUT_OF_STOCK) @map("stock_status") // set by a trigger from `quantity`
+ 
+  lastSoldAt    DateTime? @map("last_sold_at") // for "dead stock"
+  lastStockedAt DateTime? @map("last_stocked_at") // last time units arrived (stock-in / transfer-in)
+ 
+  updatedAt DateTime @updatedAt @map("updated_at")
+ 
+  @@unique([outletId, itemKey])
+  @@index([outletId, stockStatus]) // POS: "low stock in this outlet"
+  @@index([storeId, productId]) // "this product in ALL outlets"
+  @@map("outlet_stocks")
+}
+ 
+// ============================================================================
+// STOCK BATCH: the boxes
+// ============================================================================
+model StockBatch {
+  id      String @id @default(uuid())
+  storeId String @map("store_id")
+  store   Store  @relation(fields: [storeId], references: [id], onDelete: Cascade)
+ 
+  // System batch number: 1, 2, 3 ... per store (shown as B-000123). Comes from Store.nextBatchNumber,
+  // which is increased inside the same save, so two people can never get the same number.
+  batchNumber Int     @map("batch_number")
+  supplierLot String? @map("supplier_lot") // the lot code printed on the supplier's pack (needed for recalls)
+ 
+  // The diary page that CREATED this batch: a STOCK_IN, a TRANSFER_IN, or an ADJUSTMENT that
+  // found units that belong to no known delivery.
+  // One diary page can create many batches (one per product line).
+  movementId String        @map("movement_id")
+  movement   StockMovement @relation(fields: [movementId], references: [id], onDelete: Restrict)
+ 
+  // A batch created by a transfer points to the batch it came from
+  sourceBatchId String?      @map("source_batch_id")
+  sourceBatch   StockBatch?  @relation("BatchLineage", fields: [sourceBatchId], references: [id], onDelete: Restrict)
+  childBatches  StockBatch[] @relation("BatchLineage")
+ 
+  productId String          @map("product_id")
+  product   Product         @relation(fields: [productId, storeId], references: [id, storeId], onDelete: Restrict)
+  variantId String?         @map("variant_id")
+  variant   ProductVariant? @relation(fields: [variantId], references: [id], onDelete: Restrict)
+ 
+  outletId String @map("outlet_id")
+  outlet   Outlet @relation(fields: [outletId], references: [id], onDelete: Restrict)
+ 
+  unitCost          Decimal @map("unit_cost") @db.Decimal(12, 2) // cost per unit, fixed forever
+  // Units ever ADDED to this box: the delivery, plus any upward ADJUSTMENT on it.
+  // A downward adjustment, a sale or a write-off lowers remainingQuantity but NOT this number.
+  quantity          Int
+  remainingQuantity Int @map("remaining_quantity") // units still in this box
+ 
+  manufactureDate DateTime? @map("manufacture_date") @db.Date
+  expiryDate      DateTime? @map("expiry_date") @db.Date // null = never expires
+  // Set by the nightly job once the expiry date has passed: the remaining units were then
+  // moved from OutletStock.quantity to OutletStock.expiredQuantity.
+  expiredAt DateTime? @map("expired_at")
+ 
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+ 
+  items StockMovementItem[]
+ 
+  @@unique([storeId, batchNumber])
+  @@index([outletId, productId, variantId, expiryDate]) // picking the next box to sell from
+  @@index([storeId, expiryDate]) // expiring / expired reports
+  @@index([movementId])
+  @@map("stock_batches")
+}
+ 
+// ============================================================================
+// STOCK MOVEMENT: the diary page. One row per event. ONLY ADD rows, never edit or delete.
+// ============================================================================
+model StockMovement {
+  id      String       @id @default(uuid())
+  storeId String       @map("store_id")
+  store   Store        @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  type    MovementType
+ 
+  outletId String @map("outlet_id") // the outlet whose stock changed
+  outlet   Outlet @relation("MovementOutlet", fields: [outletId], references: [id], onDelete: Restrict)
+ 
+  // Transfers write TWO pages at once (TRANSFER_OUT at the source, TRANSFER_IN at the
+  // destination). They share the same transferId.
+  transferId    String? @map("transfer_id")
+  otherOutletId String? @map("other_outlet_id") // OUT: where it went.  IN: where it came from
+  otherOutlet   Outlet? @relation("MovementOtherOutlet", fields: [otherOutletId], references: [id], onDelete: Restrict)
+ 
+  // Orders (website or POS): STOCK_OUT when placed, STOCK_RESTORE when it is undone
+  orderId String? @map("order_id")
+  order   Order?  @relation(fields: [orderId], references: [id], onDelete: SetNull)
+ 
+  referenceNumber String? @map("reference_number") // supplier invoice / PO (stock-in), or any reference
+  supplierName    String? @map("supplier_name")
+  note            String? // free text: "typed 100 instead of 10", "damaged in transport"
+
+  // An ADJUSTMENT that fixes a mistake points to the page it corrects (for example the STOCK_IN).
+  // The original page is NEVER edited: it keeps showing what was typed, the adjustment shows the fix.
+  correctsMovementId String?         @map("corrects_movement_id")
+  correctsMovement   StockMovement?  @relation("Correction", fields: [correctsMovementId], references: [id], onDelete: Restrict)
+  corrections        StockMovement[] @relation("Correction")
+ 
+  performedById String? @map("performed_by_id") // null = the system (a guest's website order)
+  performedBy   User?   @relation(fields: [performedById], references: [id], onDelete: SetNull)
+ 
+  // Totals for THIS event, calculated by the server from its lines
+  totalQuantity Int     @map("total_quantity") // units. For an ADJUSTMENT: the NET change (can be negative)
+  totalCost     Decimal @map("total_cost") @db.Decimal(14, 2) // units x unit cost. For an ADJUSTMENT: the NET value change
+  totalProducts Int     @map("total_products") // how many different items (lines)
+ 
+  createdAt DateTime @default(now()) @map("created_at")
+ 
+  batches StockBatch[] // batches this event CREATED (stock-in / transfer-in only)
+  items   StockMovementItem[]
+ 
+  @@index([storeId, type, createdAt]) // the history screen, filtered by type
+  @@index([outletId, createdAt])
+  @@index([orderId])
+  @@index([transferId])
+  @@map("stock_movements")
+}
+ 
+// ============================================================================
+// STOCK MOVEMENT ITEM: the diary lines. One row per BATCH touched.
+// An order for 8 creams that took 5 from batch A and 3 from batch B = two lines.
+// This is what lets you put units back in the SAME batches when an order is cancelled.
+// ============================================================================
+model StockMovementItem {
+  id         String        @id @default(uuid())
+  movementId String        @map("movement_id")
+  movement   StockMovement @relation(fields: [movementId], references: [id], onDelete: Restrict)
+ 
+  // Copies of the page's values, written once at the same time. They make the reports fast
+  // (no join needed). The rows are never edited, so the copies can never go out of date.
+  storeId  String       @map("store_id")
+  outletId String       @map("outlet_id")
+  type     MovementType
+  createdAt DateTime    @default(now()) @map("created_at")
+ 
+  batchId String     @map("batch_id")
+  batch   StockBatch @relation(fields: [batchId], references: [id], onDelete: Restrict)
+ 
+  productId String          @map("product_id")
+  product   Product         @relation(fields: [productId, storeId], references: [id, storeId], onDelete: Restrict)
+  variantId String?         @map("variant_id")
+  variant   ProductVariant? @relation(fields: [variantId], references: [id], onDelete: Restrict)
+ 
+  // Always positive, EXCEPT for an ADJUSTMENT line: there +5 adds units, -5 removes units
+  // (one stock-count can fix some items up and others down in one page).
+  quantity Int
+  unitCost Decimal @map("unit_cost") @db.Decimal(12, 2) // cost of these units, so profit = sale price - this
+ 
+  @@index([movementId])
+  @@index([batchId])
+  @@index([storeId, type, createdAt]) // fast-moving report
+  @@index([outletId, productId, variantId, type, createdAt]) // history / speed of one item in one outlet
+  @@map("stock_movement_items")
+}
+ 

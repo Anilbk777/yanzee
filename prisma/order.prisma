@@ -7,28 +7,29 @@ enum OrderStatus {
   DELIVERED
   CANCELLED
 }
- 
+
 enum PaymentMethod {
   COD
   ESEWA
   KHALTI
 }
- 
+
 enum PaymentStatus {
   PENDING
   PAID
   FAILED
   REFUNDED
 }
+
 model Order {
   id          String @id @default(uuid())
   storeId     String @map("store_id")
   store       Store  @relation(fields: [storeId], references: [id], onDelete: Cascade)
   orderNumber Int    @map("order_number") // #1001 per store
- 
+
   status        OrderStatus @default(PENDING)
   declineReason String?     @map("decline_reason")
- 
+
   // ---- the guest shopper (no account) ----
   customerName  String  @map("customer_name")
   customerPhone String  @map("customer_phone") // +97798XXXXXXXX, THE identity of a repeat buyer
@@ -39,51 +40,56 @@ model Order {
   address       String
   landmark      String?
   customerNote  String? @map("customer_note")
- 
+
   // ---- money (NPR) ----
   subtotal    Decimal @db.Decimal(12, 2)
   shippingFee Decimal @default(0) @map("shipping_fee") @db.Decimal(12, 2)
   discount    Decimal @default(0) @db.Decimal(12, 2)
   total       Decimal @db.Decimal(12, 2)
- 
+
   paymentMethod PaymentMethod @map("payment_method")
   paymentStatus PaymentStatus @default(PENDING) @map("payment_status")
- 
+
   // ---- delivery ----
   courierName    String? @map("courier_name")
   trackingNumber String? @map("tracking_number")
- 
+
   acceptedAt   DateTime? @map("accepted_at")
   readyAt      DateTime? @map("ready_at")
   dispatchedAt DateTime? @map("dispatched_at")
   deliveredAt  DateTime? @map("delivered_at")
- 
+
   // Secret link sent by SMS after delivery: /review/<reviewToken> (guests can't log in)
   reviewToken String? @unique @map("review_token")
- 
+
+  outletId String @map("outlet_id") // the outlet the stock was taken from
+  outlet   Outlet @relation(fields: [outletId], references: [id], onDelete: Restrict)
+
   items    OrderItem[]
   history  OrderStatusHistory[]
   payments Payment[]
- 
-  createdAt DateTime @default(now()) @map("created_at")
-  updatedAt DateTime @updatedAt @map("updated_at")
- 
+
+  createdAt      DateTime        @default(now()) @map("created_at")
+  updatedAt      DateTime        @updatedAt @map("updated_at")
+  stockMovements StockMovement[]
+
   @@unique([storeId, orderNumber])
   @@index([storeId, status, createdAt]) // dashboard tabs
   @@index([storeId, customerPhone]) // repeat customers + "track my order"
+  @@index([outletId])
   @@map("orders")
 }
- 
+
 model OrderItem {
   id      String @id @default(uuid())
   orderId String @map("order_id")
   order   Order  @relation(fields: [orderId], references: [id], onDelete: Cascade)
- 
+
   productId String?         @map("product_id")
   product   Product?        @relation(fields: [productId], references: [id], onDelete: SetNull)
   variantId String?         @map("variant_id")
   variant   ProductVariant? @relation(fields: [variantId], references: [id], onDelete: SetNull)
- 
+
   // snapshot of what was bought
   productName String  @map("product_name")
   image       String?
@@ -91,13 +97,13 @@ model OrderItem {
   unitPrice   Decimal @map("unit_price") @db.Decimal(12, 2)
   quantity    Int
   lineTotal   Decimal @map("line_total") @db.Decimal(12, 2)
- 
+
   review Review?
- 
+
   @@index([orderId])
   @@map("order_items")
 }
- 
+
 model OrderStatusHistory {
   id          String      @id @default(uuid())
   orderId     String      @map("order_id")
@@ -107,11 +113,11 @@ model OrderStatusHistory {
   changedById String?     @map("changed_by_id") // null = system / the shopper
   changedBy   User?       @relation(fields: [changedById], references: [id], onDelete: SetNull)
   createdAt   DateTime    @default(now()) @map("created_at")
- 
+
   @@index([orderId])
   @@map("order_status_history")
 }
- 
+
 model Payment {
   id              String        @id @default(uuid())
   orderId         String        @map("order_id")
@@ -124,8 +130,7 @@ model Payment {
   gatewayResponse Json?         @map("gateway_response")
   paidAt          DateTime?     @map("paid_at")
   createdAt       DateTime      @default(now()) @map("created_at")
- 
+
   @@index([orderId])
   @@map("payments")
 }
- 

@@ -16,6 +16,14 @@ export const createStoreModel = (userId, data) =>
         data: {
             ...data,
             members: { create: { userId } },
+            outlets: {
+                create: {
+                    name: "Main Outlet",
+                    address: data.storeAddress,
+                    contactPhone: data.contactPhone,
+                    isMain: true,
+                },
+            },
         },
         select: { id: true, name: true, slug: true },
     });

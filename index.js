@@ -5,6 +5,8 @@ import { initCloudinary } from "./src/config/cloudinaryConfig.js";
 import app from "./app.js";
 import logger from "./src/utils/logger.js";
 import { initCronJobs } from "./src/utils/cornJob.js";
+import "./src/jobs/worker/imageWorker.js"; // Replace this with the actual relative path to your worker file
+
 
 
 const PORT = process.env.PORT || 3000;
