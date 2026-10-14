@@ -118,15 +118,15 @@ const deleteStoreService = async (userId, storeId) => {
 
     const deletedStore = await deleteStoreModel(userId, storeId);
     dispatchDeletes([
-        publicIdOf(deleted.logo, storeId, "logos"),
-        publicIdOf(deleted.seoImage, storeId, "store-seo"),
+        publicIdOf(deletedStore.logo, storeId, "logos"),
+        publicIdOf(deletedStore.seoImage, storeId, "store-seo"),
     ]);
 
     logger.info({ userId, storeId }, "Store deleted successfully");
     return {
         statusCode: 200,
         message: "Store deleted successfully",
-        data: { deletedStore },
+        data: { id: deletedStore.id, name: deletedStore.name },
     };
 }
 
