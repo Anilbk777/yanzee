@@ -65,6 +65,7 @@ model Store {
     outletStocks   OutletStock[]
     stockBatches   StockBatch[]
     stockMovements StockMovement[]
+    customers      Customer[]
 
     @@unique([name, slug])
     @@index([status])
