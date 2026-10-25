@@ -1,469 +1,342 @@
-import crypto from "node:crypto";
+import logger from "../../utils/logger.js";
 import AppError from "../../utils/AppError.js";
 import constants from "../../utils/constants.js";
-import logger from "../../utils/logger.js";
-import { CartModel } from "../cart/cartModel.js";
-import {
-    createCheckout,
-    getOrderById,
-    listOrders,
-    getOrderForShopUpdate,
-    applyStatusChange,
-    StockConflictError,
-} from "./orderModel.js";
+import { toCents, fromCents, discountToCents } from "../../utils/money.js";
+import { getOrderRefsModel, createOrderModel, getOrdersModel,getOrderByIdModel } from "./orderModel.js";
 
-// ONE ORDER = ONE SHOP. The shop owner's status tabs are the states, and the
-// actions are the transitions out of them. DECLINED, DELIVERED and CANCELLED
-// are terminal, so an empty list means "this order is finished".
-const ALLOWED_TRANSITIONS = {
-    PENDING: ["ACCEPTED", "DECLINED", "CANCELLED"],
-    ACCEPTED: ["READY"],
-    READY: ["DISPATCHED"],
-    DISPATCHED: ["DELIVERED"],
-    DECLINED: [],
-    DELIVERED: [],
-    CANCELLED: [],
-};
+const MAX_CENTS = 999_999_999_999; // Decimal(12,2) limit
 
-// The customer can only cancel, and only before the shop has accepted.
-// Everything else is the shop's action, so CANCELLED is withheld from the
-// shop's action set even though the state is reachable from PENDING.
-const SHOP_ACTIONS = ["ACCEPTED", "DECLINED", "READY", "DISPATCHED", "DELIVERED"];
+// Which products each channel may sell
+const CHANNEL_PRODUCTS = { POS: ["ALL", "POS"], ADMIN: ["ALL", "WEBSITE"] };
+// Staff-made orders are accepted straight away; a POS sale is handed over on the spot
+const INITIAL_STATUS = { POS: "DELIVERED", ADMIN: "PROCESSING" };
 
-const round2 = (value) => Math.round((value + Number.EPSILON) * 100) / 100;
+const bad = (i, message) => new AppError(`Item ${i + 1}: ${message}`, constants.BadRequest);
 
-// Raw SQL returns the decimals as text to keep the exact stored value; the
-// client is shown money, so it is converted to numbers here.
-const serializeOrder = (order) => {
-    if (!order) return null;
+export const createOrderService = async (storeId, actor, payload) => {
+    const { channel, customerId, items } = payload;
+    logger.info({ storeId, channel, items: items.length }, "Creating order");
 
-    const { subtotal, total, shippingFee, discount, items, history, ...rest } = order;
+    const productIds = [...new Set(items.map((i) => i.productId))];
+    const variantIds = [...new Set(items.map((i) => i.variantId).filter(Boolean))];
+    const { outlets, customer, products } = await getOrderRefsModel(storeId, customerId, productIds, variantIds);
 
-    return {
-        ...rest,
-        subtotal: Number(subtotal),
-        shippingFee: Number(shippingFee),
-        discount: Number(discount),
-        total: Number(total),
-        items: (items ?? []).map((item) => ({
-            ...item,
-            unitPrice: Number(item.unitPrice),
-            lineTotal: Number(item.lineTotal),
-        })),
-        ...(history ? { history } : {}),
-    };
-};
+    // ---------- customer and outlets ----------
+    if (!customer) throw new AppError("Customer not found. Add the customer first", constants.NotFound);
 
-// -----------------------------------------------------------------------------
-// CHECKOUT
-// -----------------------------------------------------------------------------
+    const outletMap = new Map(outlets.map((o) => [o.id, o]));
+    const active = outlets.filter((o) => o.isActive);
 
-const checkoutPreviewService = async (userId) => {
-    logger.info({ userId }, "Fetching checkout preview");
-
-    const cart = await CartModel.findOrCreateCart(userId);
-    const selectedItems = await CartModel.findSelectedItems(cart.id);
-
-    if (selectedItems.length === 0) {
-        throw new AppError("No items selected in cart for checkout", constants.BadRequest);
+    let placedAt; // the outlet the order is placed at
+    let outletIds; // outlets that may supply stock
+    if (channel === "POS") {
+        placedAt = outletMap.get(payload.outletId);
+        if (!placedAt) throw new AppError("Outlet not found", constants.NotFound);
+        if (!placedAt.isActive) throw new AppError("This outlet is turned off", constants.Conflict);
+        outletIds = [placedAt.id]; // a POS sale can only use what the counter holds
+    } else {
+        placedAt = payload.outletId ? outletMap.get(payload.outletId) : active.find((o) => o.isMain) ?? active[0];
+        if (!placedAt) throw new AppError("Outlet not found", constants.NotFound);
+        if (!placedAt.isActive) throw new AppError("This outlet is turned off", constants.Conflict);
+        outletIds = active.map((o) => o.id); // admin orders can be fulfilled from any active outlet
     }
 
-    const issues = [];
-    const shopsMap = new Map();
-    let grandSubtotal = 0;
+    // ---------- lines ----------
+    const productMap = new Map(products.map((p) => [p.id, p]));
+    const allowed = CHANNEL_PRODUCTS[channel];
 
-    for (const item of selectedItems) {
-        const product = item.variant.product;
-        const shop = product.shop;
-        const shopId = product.shopId;
+    const lines = items.map((item, i) => {
+        const product = productMap.get(item.productId);
+        if (!product) throw bad(i, "product not found");
+        if (product.status !== "ACTIVE") throw bad(i, `"${product.name}" is not active`);
+        if (!product.isAvailable) throw bad(i, `"${product.name}" is turned off`);
+        if (!allowed.includes(product.channel)) throw bad(i, `"${product.name}" is not sold on this channel`);
 
-        if (product.status !== "ACTIVE") {
-            issues.push(`Product "${product.name}" is no longer active`);
+        let variant = null;
+        if (product.hasVariants) {
+            if (!item.variantId) throw bad(i, `choose a variant for "${product.name}"`);
+            variant = product.variants.find((v) => v.id === item.variantId);
+            if (!variant) throw bad(i, "variant doesn't belong to this product");
+        } else if (item.variantId) {
+            throw bad(i, `"${product.name}" has no variants`);
         }
 
-        if (item.variant.stock < item.quantity) {
-            issues.push(
-                `Only ${item.variant.stock} units available for "${product.name}" (${item.variant.size})`
-            );
-        }
+        const price = variant ? variant.sellingPrice : product.sellingPrice;
+        if (price == null) throw bad(i, `"${product.name}" has no price`);
 
-        const listPrice = Number(product.price);
-        const discountPrice = product.discountPrice ? Number(product.discountPrice) : null;
-        const effectivePrice = discountPrice !== null && discountPrice > 0 ? discountPrice : listPrice;
-        const lineTotal = round2(effectivePrice * item.quantity);
+        const unitCents = toCents(price);
+        const grossCents = unitCents * item.quantity;
+        const discountCents = discountToCents(item.discount, grossCents);
+        if (discountCents > grossCents) throw bad(i, "the discount is more than the line total");
 
-        grandSubtotal += lineTotal;
-
-        if (!shopsMap.has(shopId)) {
-            shopsMap.set(shopId, {
-                shopId,
-                shopName: shop ? shop.name : "Unknown Shop",
-                items: [],
-                subtotal: 0,
-            });
-        }
-
-        const group = shopsMap.get(shopId);
-        group.items.push({
-            itemId: item.id,
-            variantId: item.variantId,
-            productId: product.id,
-            productName: product.name,
-            image: product.image,
-            size: item.variant.size,
-            unitPrice: effectivePrice.toFixed(2),
-            quantity: item.quantity,
-            lineTotal: lineTotal.toFixed(2),
-        });
-        group.subtotal = round2(group.subtotal + lineTotal);
-    }
-
-    const shippingFee = 0;
-    const totalAmount = round2(grandSubtotal + shippingFee);
-
-    const shops = Array.from(shopsMap.values()).map((s) => ({
-        ...s,
-        subtotal: s.subtotal.toFixed(2),
-    }));
-
-    return {
-        statusCode: constants.Success || 200,
-        message: "Checkout preview generated successfully",
-        data: {
-            canPlaceOrder: issues.length === 0,
-            issues,
-            itemCount: selectedItems.reduce((acc, i) => acc + i.quantity, 0),
-            subtotal: round2(grandSubtotal).toFixed(2),
-            shippingFee: shippingFee.toFixed(2),
-            totalAmount: totalAmount.toFixed(2),
-            shops,
-        },
-    };
-};
-
-const checkoutService = async (user, payload) => {
-    const userId = typeof user === "object" ? user.id : user;
-    logger.info({ userId, paymentMethod: payload.paymentMethod }, "Attempting checkout from cart");
-
-    const cart = await CartModel.findOrCreateCart(userId);
-    const selectedItems = await CartModel.findSelectedItems(cart.id);
-
-    if (selectedItems.length === 0) {
-        throw new AppError("No items selected in cart for checkout", constants.BadRequest);
-    }
-
-    const variantIdsToRemove = [];
-    const processedItems = [];
-
-    for (const item of selectedItems) {
-        const product = item.variant.product;
-        const shop = product.shop;
-
-        if (product.status !== "ACTIVE") {
-            throw new AppError(`"${product.name}" is not available for purchase`, constants.BadRequest);
-        }
-
-        if (product.shop.ownerId === userId) {
-            throw new AppError("You cannot purchase products from your own shop", constants.BadRequest);
-        }
-
-        if (item.variant.stock < item.quantity) {
-            throw new AppError(
-                `Only ${item.variant.stock} left of ${product.name} (${item.variant.size})`,
-                constants.Conflict
-            );
-        }
-
-        const listPrice = Number(product.price);
-        const discountPrice = product.discountPrice ? Number(product.discountPrice) : null;
-        const effectivePrice = discountPrice !== null && discountPrice > 0 ? discountPrice : listPrice;
-
-        variantIdsToRemove.push(item.variantId);
-        processedItems.push({
-            productId: product.id,
-            variantId: item.variantId,
-            shopId: product.shopId,
-            shopName: shop ? shop.name : "Unknown Shop",
-            productName: product.name,
-            image: product.image,
-            size: item.variant.size,
-            unitPrice: effectivePrice,
-            quantity: item.quantity,
-        });
-    }
-
-    // Group items by shop
-    const groupsByShop = new Map();
-    for (const item of processedItems) {
-        if (!groupsByShop.has(item.shopId)) {
-            groupsByShop.set(item.shopId, { shopId: item.shopId, shopName: item.shopName, items: [] });
-        }
-        groupsByShop.get(item.shopId).items.push(item);
-    }
-
-    const groups = [...groupsByShop.values()];
-    const grandSubtotal = processedItems.reduce((sum, item) => sum + item.unitPrice * item.quantity, 0);
-    const shippingFee = 0;
-    const totalAmount = round2(grandSubtotal + shippingFee);
-
-    for (const group of groups) {
-        const groupSubtotal = group.items.reduce((sum, item) => sum + item.unitPrice * item.quantity, 0);
-        group.subtotalShare = grandSubtotal > 0 ? groupSubtotal / grandSubtotal : 1 / groups.length;
-    }
-
-    const checkoutId = crypto.randomUUID();
-
-    // Check payment gateway stubbing for digital payment methods
-    if (payload.paymentMethod === "ESEWA" || payload.paymentMethod === "KHALTI") {
         return {
-            statusCode: constants.Success || 200,
-            message: `${payload.paymentMethod} gateway integration coming soon`,
-            data: {
-                checkoutId,
-                paymentMethod: payload.paymentMethod,
-                paymentStatus: "PENDING",
-                status: "GATEWAY_STUBBED",
-                totalAmount: totalAmount.toFixed(2),
-            },
+            index: i,
+            itemKey: variant?.id ?? product.id,
+            productId: product.id,
+            variantId: variant?.id ?? null,
+            productName: product.name,
+            variantName: variant?.name ?? null,
+            displayName: variant ? `${product.name} — ${variant.name}` : product.name,
+            sku: variant?.sku ?? product.sku ?? null,
+            image: product.imageUrls?.[0] ?? null,
+            unitCents,
+            quantity: item.quantity,
+            grossCents,
+            discount: item.discount ?? null,
+            discountCents,
         };
+    });
+
+    // ---------- money (all in whole paisa, calculated here, never trusted from the client) ----------
+    const subtotal = lines.reduce((s, l) => s + l.grossCents, 0);
+    const lineDiscounts = lines.reduce((s, l) => s + l.discountCents, 0);
+    const afterLines = subtotal - lineDiscounts;
+
+    const orderDiscount = discountToCents(payload.discount, afterLines);
+    if (orderDiscount > afterLines) throw new AppError("The order discount is more than the order amount", constants.BadRequest);
+
+    const deliveryFee = toCents(payload.deliveryFee ?? 0);
+    const total = afterLines - orderDiscount + deliveryFee;
+    if (total > MAX_CENTS) throw new AppError("The order total is too large", constants.BadRequest);
+
+    // ---------- payment ----------
+    const paymentStatus = payload.paymentStatus ?? "UNPAID";
+    let paid = 0;
+    if (paymentStatus === "PAID") paid = total;
+    if (paymentStatus === "PARTIAL_PAID") {
+        paid = toCents(payload.paidAmount);
+        if (paid <= 0 || paid >= total) {
+            throw new AppError("For a partial payment, the paid amount must be more than 0 and less than the order total", constants.BadRequest);
+        }
     }
 
-    let orders;
+    const order = {
+        channel,
+        status: INITIAL_STATUS[channel],
+        customerName: customer.name,
+        customerPhone: customer.phone,
+        customerEmail: customer.email ?? null,
+        province: payload.province ?? null,
+        district: payload.district ?? null,
+        city: payload.city ?? null,
+        address: payload.address ?? placedAt.address, // POS: the outlet's address when none is given
+        landmark: payload.landmark ?? null,
+        orderNote: payload.orderNote ?? null,
+        outletId: placedAt.id,
+        subtotal: fromCents(subtotal),
+        discount: fromCents(lineDiscounts + orderDiscount),
+        deliveryFee: fromCents(deliveryFee),
+        total: fromCents(total),
+        orderDiscountType: payload.discount?.type ?? null,
+        orderDiscountValue: payload.discount?.value ?? null,
+        orderDiscountAmount: fromCents(orderDiscount),
+        paymentMethod: payload.paymentMethod,
+        paymentStatus,
+        paidAmount: fromCents(paid),
+    };
+
+    const payment = paid > 0
+        ? { method: payload.paymentMethod, amount: fromCents(paid), reference: payload.paymentReference ?? null }
+        : null;
+
+    // The first line of the order timeline (written in the same transaction as the order)
+    const makeActivity = ({ orderNumber, fulfilledFrom }) => ({
+        action: "ORDER_CREATED",
+        title: `Order #${orderNumber} created from the ${channel === "POS" ? "POS" : "admin dashboard"}`,
+        actorType: "USER",
+        actorId: actor.id,
+        actorName: actor.name ?? null,
+        actorRole: actor.role ? String(actor.role).toLowerCase() : null,
+        meta: {
+            channel,
+            itemCount: lines.length,
+            totalQuantity: lines.reduce((s, l) => s + l.quantity, 0),
+            subtotal: order.subtotal,
+            discount: order.discount,
+            deliveryFee: order.deliveryFee,
+            total: order.total,
+            paymentMethod: order.paymentMethod,
+            paymentStatus,
+            paidAmount: order.paidAmount,
+            fulfilledFrom: fulfilledFrom.map((f) => ({ ...f, outletName: outletMap.get(f.outletId)?.name ?? null })),
+            split: fulfilledFrom.length > 1,
+        },
+    });
+
+    // ---------- save ----------
+    let result;
     try {
-        orders = await createCheckout({
-            customerId: userId,
-            cartId: cart.id,
-            groups,
-            checkoutId,
-            paymentMethod: payload.paymentMethod,
-            address: payload.address,
-            totalAmount,
-            variantIdsToRemove,
-            shippingFee,
+        result = await createOrderModel(storeId, actor.id, {
+            order, customerId, lines, outletIds, preferredOutletId: placedAt.id, payment, makeActivity,
         });
     } catch (error) {
-        if (error instanceof StockConflictError) {
-            throw new AppError(error.message, constants.Conflict);
+        if (error?.code === "STOCK_SHORT") {
+            const where = channel === "POS" ? "at this outlet" : "across your outlets";
+            const list = error.shortages
+                .map((s) => `"${lines[s.index].displayName}" (needed ${s.requested}, available ${s.available})`)
+                .join(", ");
+            throw new AppError(`Not enough stock ${where}: ${list}`, constants.Conflict);
+        }
+        if (error?.code === "STOCK_OUT_OF_SYNC") {
+            logger.error({ err: error, storeId }, "Stock records are out of sync");
+            throw new AppError("Stock records for one of the items don't match. Please run a stock check and try again", constants.Conflict);
+        }
+        if (error?.code === "P2025" || error?.code === "P2003") {
+            throw new AppError("The customer, a product or an outlet changed while saving. Please retry", constants.Conflict);
         }
         throw error;
     }
 
-    logger.info({ customerId: userId, checkoutId, orders: orders.length }, "Checkout completed");
+    const { order: created, fulfilledFrom } = result;
+    logger.info({ storeId, orderId: created.id, orderNumber: created.orderNumber }, "Order created");
 
     return {
-        statusCode: constants.Created || 201,
-        message:
-            orders.length > 1
-                ? `Checkout split into ${orders.length} orders across ${orders.length} shops`
-                : "Order placed successfully",
+        statusCode: 201,
+        message: "Order created successfully",
         data: {
-            checkoutId,
-            orderCount: orders.length,
-            orders: orders.map((order) => ({
-                id: order.id,
-                orderNumber: order.orderNumber,
-                checkoutId: order.checkoutId,
-                shopId: order.shopId,
-                subtotal: Number(order.subtotal),
-                shippingFee: Number(order.shippingFee),
-                total: Number(order.total),
+            order: {
+                ...created,
+                split: fulfilledFrom.length > 1,
+                fulfilledFrom: fulfilledFrom.map((f) => ({ ...f, outletName: outletMap.get(f.outletId)?.name ?? null })),
+            },
+        },
+    };
+};
+
+
+export const getOrdersService = async (storeId, query) => {
+    const { items, total, quantities } = await getOrdersModel(storeId, query);
+
+    return {
+        statusCode: 200,
+        message: "Orders fetched successfully",
+        data: {
+            orders: items.map((o) => ({
+                id: o.id,
+                orderNumber: o.orderNumber,
+                status: o.status,
+                channel: o.channel,
+                customerName: o.customerName,
+                customerPhone: o.customerPhone,
+                customerEmail: o.customerEmail,
+                total: o.total,
+                paymentMethod: o.paymentMethod,
+                paymentStatus: o.paymentStatus,
+                totalQuantity: quantities.get(o.id) ?? 0,
+                createdAt: o.createdAt,
+                updatedAt: o.updatedAt,
             })),
+            pagination: { page: query.page, limit: query.limit, total, totalPages: Math.ceil(total / query.limit) },
         },
     };
 };
 
-// -----------------------------------------------------------------------------
-// CUSTOMER
-// -----------------------------------------------------------------------------
 
-const listMyOrdersService = async (customerId, query) => {
-    const { page, limit, status, search } = query;
-    const { orders, total } = await listOrders({ scope: "customer", ownerId: customerId, page, limit, status, search });
 
-    return {
-        statusCode: 200,
-        message: "Orders fetched successfully",
-        data: {
-            orders: orders.map(serializeOrder),
-            pagination: {
-                page,
-                limit,
-                total,
-                totalPages: Math.max(Math.ceil(total / limit), 1),
-            },
-        },
-    };
-};
+export const getOrderService = async (storeId, orderId) => {
+    const o = await getOrderByIdModel(storeId, orderId);
+    if (!o) throw new AppError("Order not found", constants.NotFound);
 
-const getMyOrderService = async (customerId, orderId) => {
-    const order = await getOrderById(orderId);
+    const items = o.items.map((i) => ({
+        id: i.id,
+        productId: i.productId,
+        variantId: i.variantId,
+        name: i.variantName ? `${i.productName} — ${i.variantName}` : i.productName,
+        productName: i.productName,
+        variantName: i.variantName,
+        sku: i.sku,
+        image: i.image,
+        quantity: i.quantity,
+        unitPrice: i.unitPrice,
+        totalPrice: fromCents(toCents(i.unitPrice) * i.quantity), // quantity x unit price, before discounts
+        discount: i.discountType
+            ? { type: i.discountType, value: i.discountValue, amount: i.discountAmount } // PERCENT: value = the percentage
+            : null,
+        couponDiscountAmount: i.couponDiscountAmount,
+        lineTotal: i.lineTotal, // after discounts
+        fulfilledFrom: i.outlet,
+    }));
 
-    // Another customer's order is a 404, not a 403: the response must not
-    // confirm that the id exists.
-    if (!order || order.customerId !== customerId) {
-        throw new AppError("Order not found", constants.NotFound);
-    }
+    const orderDiscount = o.orderDiscountType
+        ? { type: o.orderDiscountType, value: o.orderDiscountValue, amount: o.orderDiscountAmount }
+        : null;
+
+    // discount (total) = line discounts + order discount + coupon discount
+    const itemDiscount = fromCents(
+        toCents(o.discount) - toCents(o.orderDiscountAmount) - toCents(o.couponDiscount)
+    );
 
     return {
         statusCode: 200,
         message: "Order fetched successfully",
-        data: { order: serializeOrder(order) },
-    };
-};
-
-const cancelOrderService = async (customerId, orderId, payload) => {
-    const order = await getOrderById(orderId);
-
-    if (!order || order.customerId !== customerId) {
-        throw new AppError("Order not found", constants.NotFound);
-    }
-
-    if (!ALLOWED_TRANSITIONS[order.status]?.includes("CANCELLED")) {        throw new AppError(
-            `An order that is already ${order.status.toLowerCase().replace("_", " ")} cannot be cancelled`,
-            constants.BadRequest
-        );
-    }
-
-    // Restock, because the items never shipped.
-    const updated = await applyStatusChange({
-        orderId,
-        currentStatus: order.status,
-        nextStatus: "CANCELLED",
-        note: payload.reason,
-        changedBy: customerId,
-        restock: order.items,
-        paymentStatus: order.paymentStatus === "PAID" ? "REFUNDED" : order.paymentStatus,
-    });
-
-    if (!updated) {
-        throw new AppError("Order was just updated, please try again", constants.Conflict);
-    }
-
-    logger.info({ orderId, customerId }, "Order cancelled by customer");
-
-    return {
-        statusCode: 200,
-        message: "Order cancelled successfully",
-        data: { id: orderId, status: "CANCELLED" },
-    };
-};
-
-// -----------------------------------------------------------------------------
-// SHOP OWNER
-// -----------------------------------------------------------------------------
-
-const listShopOrdersService = async (shop, query) => {
-    const { page, limit, status, search } = query;
-    const { orders, total } = await listOrders({ scope: "shop", ownerId: shop.id, page, limit, status, search });
-
-    return {
-        statusCode: 200,
-        message: "Orders fetched successfully",
         data: {
-            orders: orders.map(serializeOrder),
-            pagination: {
-                page,
-                limit,
-                total,
-                totalPages: Math.max(Math.ceil(total / limit), 1),
+            order: {
+                id: o.id,
+                orderNumber: o.orderNumber,
+                status: o.status,
+                paymentStatus: o.paymentStatus,
+                paymentMethod: o.paymentMethod,
+                channel: o.channel,
+                createdBy: o.createdBy, // { id, fullName } or null
+                placedAt: o.outlet,
+                createdAt: o.createdAt,
+                updatedAt: o.updatedAt,
+
+                summary: {
+                    items,
+                    totalQuantity: items.reduce((s, i) => s + i.quantity, 0),
+                    subtotal: o.subtotal,
+                    itemDiscount,
+                    orderDiscount,
+                    coupon: o.couponCode ? { code: o.couponCode, amount: o.couponDiscount } : null,
+                    discount: o.discount, // all discounts together
+                    deliveryFee: o.deliveryFee,
+                    total: o.total,
+                    paidAmount: o.paidAmount,
+                    refundedAmount: o.refundedAmount,
+                },
+
+                customer: {
+                    id: o.customer?.id ?? null,
+                    name: o.customerName,
+                    phone: o.customerPhone,
+                    email: o.customerEmail,
+                    province: o.province,
+                    district: o.district,
+                    city: o.city,
+                    address: o.address,
+                    landmark: o.landmark,
+                    customerNote: o.customerNote,
+                    orderNote: o.orderNote,
+                    totalOrders: o.customer?.totalOrder ?? null,
+                    customerSince: o.customer?.createdAt ?? null,
+                },
+
+                stockMovements: o.stockMovements.map((m) => ({
+                    id: m.id,
+                    type: m.type,
+                    referenceNumber: m.referenceNumber,
+                    createdAt: m.createdAt,
+                    outlet: m.outlet,
+                    performedBy: m.performedBy, // null = the system
+                    totalProducts: m.totalProducts,
+                    totalQuantity: m.totalQuantity,
+                    totalValue: m.totalCost,
+                    items: m.items.map((x) => ({
+                        id: x.id,
+                        name: x.variant ? `${x.product.name} — ${x.variant.name}` : x.product.name,
+                        productId: x.product.id,
+                        variantId: x.variant?.id ?? null,
+                        batchId: x.batch.id,
+                        batchNumber: x.batch.batchNumber,
+                        batchExpiryDate: x.batch.expiryDate,
+                        quantity: x.quantity,
+                        unitCost: x.unitCost,
+                    })),
+                })),
+
+                activities: o.activities,
             },
         },
     };
-};
-
-const getShopOrderService = async (shop, orderId) => {
-    const order = await getOrderById(orderId);
-
-    if (!order || order.shopId !== shop.id) {
-        throw new AppError("Order not found", constants.NotFound);
-    }
-
-    return {
-        statusCode: 200,
-        message: "Order fetched successfully",
-        data: { order: serializeOrder(order) },
-    };
-};
-
-const updateOrderStatusService = async (shop, orderId, payload) => {
-    logger.info({ orderId, shopId: shop.id, next: payload.status }, "Attempting order status change");
-
-    // One read: authorises the shop and carries the item rows needed for a
-    // possible restock.
-    const order = await getOrderForShopUpdate(shop.id, orderId);
-
-    if (!order) {
-        throw new AppError("Order not found", constants.NotFound);
-    }
-
-    // CANCELLED is reachable from PENDING, but it is the customer's action.
-    if (!SHOP_ACTIONS.includes(payload.status)) {
-        throw new AppError("Only the customer can cancel an order", constants.Forbidden);
-    }
-
-    if (order.status === payload.status) {
-        throw new AppError(`Order is already ${payload.status.toLowerCase().replace("_", " ")}`, constants.BadRequest);
-    }
-
-    if (!ALLOWED_TRANSITIONS[order.status]?.includes(payload.status)) {
-        throw new AppError(
-            `Cannot go from ${order.status} to ${payload.status}`,
-            constants.BadRequest
-        );
-    }
-
-    // Declining or cancelling returns the units to the shop's stock.
-    const restock = ["DECLINED"].includes(payload.status) ? order.items : null;
-
-    // Cash on delivery is settled at the doorstep, so it is only marked paid
-    // once the order is delivered. ESEWA and KHALTI are left to the gateway
-    // callback, which is not wired up yet, so they keep their current status.
-    let paymentStatus = order.paymentStatus;
-    if (payload.status === "DELIVERED" && order.paymentMethod === "COD") {
-        paymentStatus = "PAID";
-    } else if (payload.status === "DECLINED" && order.paymentStatus === "PAID") {
-        paymentStatus = "REFUNDED";
-    }
-
-    const updated = await applyStatusChange({
-        orderId,
-        currentStatus: order.status,
-        nextStatus: payload.status,
-        declineReason: payload.declineReason,
-        note: payload.note,
-        changedBy: shop.ownerId ?? null,
-        courierName: payload.courierName,
-        trackingNumber: payload.trackingNumber,
-        restock,
-        paymentStatus,
-    });
-
-    if (!updated) {
-        // The order moved out of `order.status` between the read and the
-        // write, so someone else handled this action first.
-        throw new AppError("Order was just updated, please try again", constants.Conflict);
-    }
-
-    logger.info({ orderId, next: payload.status }, "Order status changed");
-
-    return {
-        statusCode: 200,
-        message: `Order marked as ${payload.status.toLowerCase()}`,
-        data: {
-            id: orderId,
-            status: updated.status,
-            paymentStatus: updated.paymentStatus,
-        },
-    };
-};
-
-export {
-    checkoutPreviewService,
-    checkoutService,
-    listMyOrdersService,
-    getMyOrderService,
-    cancelOrderService,
-    listShopOrdersService,
-    getShopOrderService,
-    updateOrderStatusService,
 };

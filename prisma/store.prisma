@@ -48,6 +48,7 @@ model Store {
     seoImage       String? @map("seo_image")
 
     nextBatchNumber Int @default(1) @map("next_batch_number")
+    nextOrderNumber Int @default(1001) @map("next_order_number") 
 
     createdAt DateTime @default(now()) @map("created_at")
     updatedAt DateTime @updatedAt @map("updated_at")
@@ -66,6 +67,7 @@ model Store {
     stockBatches   StockBatch[]
     stockMovements StockMovement[]
     customers      Customer[]
+    coupons        Coupon[]
 
     @@unique([name, slug])
     @@index([status])

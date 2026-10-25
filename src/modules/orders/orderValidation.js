@@ -1,104 +1,97 @@
 import { z } from "zod";
+import { instant } from "../../utils/dateRange.js";
 
-export const ORDER_STATUSES = [
-    "PENDING",
-    "ACCEPTED",
-    "DECLINED",
-    "READY",
-    "DISPATCHED",
-    "DELIVERED",
-    "CANCELLED",
-];
 
-export const PAYMENT_METHODS = ["COD", "ESEWA", "KHALTI"];
+const MAX_MONEY = 9_999_999_999.99;
+const hasMaxDecimals2 = (v) => Math.abs(v * 100 - Math.round(v * 100)) < 1e-6;
 
-const MAX_MONEY = 9999999999.99; // Decimal(12,2) ceiling
+const nullableText = (max, message) =>
+    z.string().trim().max(max, message).transform((v) => v || null).nullish();
 
-const money = (label) => z
-    .coerce.number()
-    .min(0, `${label} cannot be negative`)
-    .max(MAX_MONEY, `${label} cannot exceed ${MAX_MONEY}`)
-    .refine(
-        (value) => Math.abs(value * 100 - Math.round(value * 100)) < 1e-6,
-        `${label} can have at most 2 decimal places`
-    );
+const money = (message) =>
+    z.number(message).min(0, "Amount cannot be negative").max(MAX_MONEY, "Amount is too large")
+        .refine(hasMaxDecimals2, "Amount can have at most 2 decimal places");
 
-// The order STATE. The actions a shop owner clicks are the transitions
-// allowed out of it - see ALLOWED_TRANSITIONS in orderService.js.
-export const ORDER_STATUS_TABS = ["PENDING", "ACCEPTED", "READY", "DISPATCHED", "DELIVERED", "DECLINED", "CANCELLED"];
+const DiscountSchema = z
+    .object({
+        type: z.enum(["FIXED", "PERCENT"], "Invalid discount type"),
+        value: z.number("Discount must be a number").positive("Discount must be greater than 0")
+            .max(MAX_MONEY, "Discount is too large")
+            .refine(hasMaxDecimals2, "Discount can have at most 2 decimal places"),
+    })
+    .superRefine((d, ctx) => {
+        if (d.type === "PERCENT" && d.value > 100) {
+            ctx.addIssue({ code: "custom", path: ["value"], message: "A percent discount cannot exceed 100" });
+        }
+    });
 
-// Checkout deliberately carries no prices. unitPrice, lineTotal, subtotal,
-// discount and total are all recomputed from the products table so a client
-// cannot dictate what it pays. shippingFee stays server-side at 0 because the
-// schema has no per-shop shipping rate yet.
-const AddressSchema = z.object({
-    recipientName: z.string().trim().min(1, "Recipient name is required").max(100),
-    recipientPhone: z.string().trim().length(10, "Recipient phone number must be 10 digits"),
-    province: z.string().trim().max(60).optional().nullable(),
-    district: z.string().trim().max(60).optional().nullable(),
-    city: z.string().trim().max(60).optional().nullable(),
-    address: z.string().trim().min(5, "Address is required").max(300),
-    note: z.string().trim().max(300).optional().nullable(),
+const OrderItemSchema = z.object({
+    productId: z.uuid("Invalid product id"),
+    variantId: z.uuid("Invalid variant id").nullish(), // required for products with variants (checked in the service)
+    quantity: z.number("Quantity must be a number").int("Quantity must be a whole number")
+        .min(1, "Quantity must be at least 1").max(100_000, "Quantity is too large"),
+    discount: DiscountSchema.nullish(),
 });
 
-export const CheckoutSchema = z.object({
-    paymentMethod: z.enum(PAYMENT_METHODS, { error: "Invalid payment method" }),
-    address: AddressSchema,
-});
+export const CreateOrderSchema = z
+    .object({
+        channel: z.enum(["POS", "ADMIN"], "Channel must be POS or ADMIN"),
+        outletId: z.uuid("Invalid outlet id").optional(), // POS: the counter. ADMIN: optional preferred outlet (default: main)
+        customerId: z.uuid("Invalid customer id"),
 
-export const CancelOrderSchema = z.object({
-    reason: z.string().trim().min(1, "Cancellation reason is required").max(200),
-});
+        province: nullableText(100, "Province is too long"),
+        district: nullableText(100, "District is too long"),
+        city: nullableText(100, "City is too long"),
+        address: nullableText(200, "Address cannot exceed 200 characters"),
+        landmark: nullableText(150, "Landmark is too long"),
+        orderNote: nullableText(500, "Order note cannot exceed 500 characters"),
 
-// Shop owner clicks Accept / Decline / Mark Ready / Dispatch / Mark Delivered.
-export const UpdateOrderStatusSchema = z.object({
-    status: z.enum(ORDER_STATUSES, { error: "Invalid order status" }),
+        deliveryFee: money("Delivery fee must be a number").optional(),
+        discount: DiscountSchema.nullish(), // whole-order discount
 
-    declineReason: z.string().trim().min(1, "Decline reason is required").max(200).optional().nullable(),
+        paymentMethod: z.enum(["COD", "CASH", "BANK_TRANSFER", "CARD", "FONEPAY", "ESEWA", "KHALTI"], "Invalid payment method"),
+        paymentStatus: z.enum(["UNPAID", "PARTIAL_PAID", "PAID"], "Invalid payment status").optional(),
+        paidAmount: money("Paid amount must be a number").optional(), // PARTIAL_PAID only
+        paymentReference: nullableText(100, "Payment reference is too long"),
 
-    note: z.string().trim().max(200).optional().nullable(),
+        items: z.array(OrderItemSchema).min(1, "Add at least one item").max(100, "At most 100 items per order"),
+    })
+    .superRefine((o, ctx) => {
+        const issue = (path, message) => ctx.addIssue({ code: "custom", path, message });
 
-    courierName: z.string().trim().max(60).optional().nullable(),
+        if (o.channel === "POS" && !o.outletId) issue(["outletId"], "Choose the outlet for this POS order");
+        if (o.channel === "ADMIN" && !o.address) issue(["address"], "Address is required");
 
-    trackingNumber: z.string().trim().max(60).optional().nullable(),
-}).superRefine((data, ctx) => {
-    if (data.status === "DECLINED" && !data.declineReason) {
-        ctx.addIssue({
-            code: "custom",
-            path: ["declineReason"],
-            message: "Decline reason is required when declining an order",
+        const status = o.paymentStatus ?? "UNPAID";
+        if (status === "PARTIAL_PAID" && !(o.paidAmount > 0)) issue(["paidAmount"], "Enter the amount paid so far");
+        if (status !== "PARTIAL_PAID" && o.paidAmount !== undefined) issue(["paidAmount"], "Paid amount is only used for partial payments");
+
+        const seen = new Set();
+        o.items.forEach((item, i) => {
+            const key = `${item.productId}:${item.variantId ?? ""}`;
+            if (seen.has(key)) issue(["items", i], "This item is already in the order. Change its quantity instead");
+            seen.add(key);
         });
-    }
-    // Dispatching without a courier reference leaves the customer unable to
-    // track the parcel.
-    if (data.status === "DISPATCHED" && !data.courierName && !data.trackingNumber) {
-        ctx.addIssue({
-            code: "custom",
-            path: ["courierName"],
-            message: "Courier name or tracking number is required when dispatching",
-        });
-    }
-});
+    });
 
-export const OrderIdParamsSchema = z.object({
+
+
+export const ListOrdersQuerySchema = z
+    .object({
+        page: z.coerce.number().int().min(1).default(1),
+        limit: z.coerce.number().int().min(1).max(100).default(20),
+        search: z.string().trim().max(100).optional(), // customer name, phone or order number
+        status: z.enum(["PENDING", "PROCESSING", "DISPATCHED", "DELIVERED", "CANCELLED", "RETURNED"], "Invalid status").optional(),
+        channel: z.enum(["ALL", "POS", "WEB"], "Channel must be ALL, POS or WEB").default("ALL"),
+        from: instant("start").optional(),
+        to: instant("end").optional(),
+    })
+    .superRefine((q, ctx) => {
+        if (q.from && q.to && q.from > q.to) {
+            ctx.addIssue({ code: "custom", path: ["to"], message: "'to' must be after 'from'" });
+        }
+    });
+
+export const OrderIdSchema = z.object({
     orderId: z.uuid("Invalid order id"),
-});
-
-export const ListOrdersQuerySchema = z.object({
-    page: z.coerce.number()
-        .int("Page must be an integer")
-        .min(1, "Page must be at least 1")
-        .default(1),
-
-    limit: z.coerce.number()
-        .int("Limit must be an integer")
-        .min(1, "Limit must be at least 1")
-        .max(50, "Limit cannot exceed 50")
-        .default(10),
-
-    status: z.enum(ORDER_STATUSES, { error: "Invalid order status" }).optional(),
-
-    search: z.string().trim().min(1, "Search cannot be empty")
-        .max(60, "Search cannot exceed 60 characters")
-        .optional(),
 });

@@ -1,45 +1,19 @@
 import { Router } from "express";
 import authenticateUser from "../../middlewares/authenticate.js";
-import requireOwner from "../../middlewares/requireOwner.js";
-import requireShop from "../../middlewares/requireShop.js";
-import verifyShopHeader from "../../middlewares/verifyShopHeader.js";
+import verifyStore from "../../middlewares/verifyStore.js";
+import requireStoreRole from "../../middlewares/requireStoreRole.js";
 import { validateRequest, validateQuery, validateParams } from "../../middlewares/requestValidate.js";
-import {
-    CheckoutSchema,
-    CancelOrderSchema,
-    UpdateOrderStatusSchema,
-    OrderIdParamsSchema,
-    ListOrdersQuerySchema,
-} from "./orderValidation.js";
-import {
-    checkoutPreviewController,
-    checkoutController,
-    listMyOrdersController,
-    getMyOrderController,
-    cancelOrderController,
-    listShopOrdersController,
-    getShopOrderController,
-    updateOrderStatusController,
-} from "./orderController.js";
+import { CreateOrderSchema, ListOrdersQuerySchema, OrderIdSchema } from "./orderValidation.js";
+import { createOrderController, getOrdersController, getOrderController } from "./orderController.js";
 
 const orderRouter = Router();
 
-const customerOnly = [authenticateUser];
-const shopOnly = [authenticateUser, requireOwner];
+orderRouter.use(authenticateUser, verifyStore);
 
-// ---- shop owner ----
-// Registered before "/:orderId" so the literal "shop" segment is not swallowed
-// by the order-id route and rejected as a bad uuid.
-orderRouter.get("/shop", ...shopOnly, validateQuery(ListOrdersQuerySchema), listShopOrdersController);
-orderRouter.get("/shop/:orderId", ...shopOnly, validateParams(OrderIdParamsSchema), getShopOrderController);
-orderRouter.patch("/shop/:orderId/status", ...shopOnly, validateParams(OrderIdParamsSchema), validateRequest(UpdateOrderStatusSchema), updateOrderStatusController);
+orderRouter.post("/", requireStoreRole("OWNER", "MANAGER", "ORDER_MANAGER"), validateRequest(CreateOrderSchema), createOrderController);
 
-// ---- customer ----
-orderRouter.get("/checkout/preview", ...customerOnly, checkoutPreviewController);
-orderRouter.post("/checkout", ...customerOnly, validateRequest(CheckoutSchema), checkoutController);
-// orderRouter.post("/", ...customerOnly, validateRequest(CheckoutSchema), checkoutController);
-orderRouter.get("/", ...customerOnly, validateQuery(ListOrdersQuerySchema), listMyOrdersController);
-orderRouter.get("/:orderId", ...customerOnly, validateParams(OrderIdParamsSchema), getMyOrderController);
-orderRouter.post("/:orderId/cancel", ...customerOnly, validateParams(OrderIdParamsSchema), validateRequest(CancelOrderSchema), cancelOrderController);
+orderRouter.get("/", requireStoreRole("OWNER", "MANAGER", "ORDER_MANAGER"), validateQuery(ListOrdersQuerySchema), getOrdersController);
+
+orderRouter.get("/:orderId", requireStoreRole("OWNER", "MANAGER", "ORDER_MANAGER"), validateParams(OrderIdSchema), getOrderController);
 
 export default orderRouter;

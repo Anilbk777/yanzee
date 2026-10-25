@@ -1,13 +1,38 @@
-model Customer{
-    id      String   @id @default(uuid())
-    storeId String   @map("store_id")
-    store   Store    @relation(fields: [storeId], references: [id], onDelete: Cascade)
-    name    String
-    phone   String
-    email   String? 
-    createdAt DateTime @default(now()) @map("created_at")
-    updatedAt DateTime @updatedAt @map("updated_at")
 
-    @@unique([storeId, phone])
-    @@map("customers")
+// ============================================================================
+// CUSTOMER: only for people who have ordered at the POS (see the rules below)
+// ============================================================================
+model Customer {
+  id         String   @id @default(uuid())
+  storeId    String   @map("store_id")
+  store      Store    @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  name       String
+  phone      String // THE identity inside a store
+  email      String?
+  totalOrder Int      @default(0) @map("total_order") // orders PLACED (cancelling does not lower it)
+  createdAt  DateTime @default(now()) @map("created_at")
+  updatedAt  DateTime @updatedAt @map("updated_at")
+ 
+  orders Order[]
+ 
+  @@unique([storeId, phone])
+  @@index([storeId, name])
+  @@map("customers")
 }
+// RULES (done in the order-creating code, in the same transaction as the order).
+// The phone number decides. Same phone in the same store = same customer.
+//
+//   phone matches a customer   -> link the order to that customer, totalOrder + 1   (ALL channels)
+//   phone is new:
+//        POS or ADMIN order    -> CREATE the customer, and link the EARLIER orders of that phone
+//                                 too (UPDATE orders SET customer_id = ... WHERE store_id = ... AND
+//                                 customer_phone = ... AND customer_id IS NULL), so
+//                                 totalOrder = those earlier orders + this one
+//        WEBSITE order         -> create NO customer; the details stay on the order only
+//
+// Use upsert on the unique (storeId, phone) so two orders at the same moment cannot
+// create the customer twice or lose a +1.
+// Repair query if the number ever looks wrong:
+//   UPDATE customers c SET total_order =
+//     (SELECT count(*) FROM orders o WHERE o.store_id = c.store_id AND o.customer_phone = c.phone);
+ 

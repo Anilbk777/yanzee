@@ -1,0 +1,79 @@
+
+enum DiscountType {
+  FIXED // a money amount, e.g. Rs 50 off
+  PERCENT // a percentage, e.g. 10 = 10% off
+}
+ 
+enum CouponScope {
+  ORDER // discount on the whole order
+  PRODUCT // discount only on the listed products / variants
+}
+
+// ============================================================================
+// COUPON: a code the shopper types, or staff applies
+// ============================================================================
+model Coupon {
+  id      String @id @default(uuid())
+  storeId String @map("store_id")
+  store   Store  @relation(fields: [storeId], references: [id], onDelete: Cascade)
+ 
+  code        String // always UPPERCASE: "WELCOME10"
+  description String?
+ 
+  discountType  DiscountType @map("discount_type")
+  discountValue Decimal      @map("discount_value") @db.Decimal(12, 2) // Rs amount, or the percent (10 = 10%)
+  scope         CouponScope  @default(ORDER)
+ 
+  maxDiscountAmount Decimal? @map("max_discount_amount") @db.Decimal(12, 2) // upper limit for a PERCENT coupon
+  minOrderAmount    Decimal? @map("min_order_amount") @db.Decimal(12, 2) // the order must be at least this much
+ 
+  startsAt DateTime? @map("starts_at")
+  endsAt   DateTime? @map("ends_at")
+ 
+  usageLimit       Int? @map("usage_limit") // total uses allowed; null = unlimited
+  perCustomerLimit Int? @map("per_customer_limit") // uses per phone number; null = unlimited
+  usedCount        Int  @default(0) @map("used_count")
+ 
+  isActive Boolean @default(true) @map("is_active")
+ 
+  products CouponProduct[] // only used when scope = PRODUCT
+  orders   Order[]
+ 
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+ 
+  @@unique([storeId, code])
+  @@index([storeId, isActive])
+  @@map("coupons")
+}
+ 
+// Which products / variants a PRODUCT-scope coupon applies to.
+//   variantId empty  -> the product, in all its variants (or a product with no variants)
+//   variantId set    -> only that variant
+model CouponProduct {
+  id        String          @id @default(uuid())
+  couponId  String          @map("coupon_id")
+  coupon    Coupon          @relation(fields: [couponId], references: [id], onDelete: Cascade)
+  productId String          @map("product_id")
+  product   Product         @relation(fields: [productId], references: [id], onDelete: Cascade)
+  variantId String?         @map("variant_id")
+  variant   ProductVariant? @relation(fields: [variantId], references: [id], onDelete: Cascade)
+ 
+  @@index([couponId])
+  @@index([productId])
+  @@map("coupon_products")
+}
+ 
+// ============================================================================
+// LINES TO ADD TO YOUR EXISTING MODELS
+//
+//  Store:          + customers Customer[]  coupons Coupon[]  orders Order[]
+//  User:           + ordersCreated Order[]  orderActivities OrderActivity[]  paymentsReceived Payment[]
+//                  - REMOVE statusChanges OrderStatusHistory[]
+//  Product:        + couponTargets CouponProduct[]
+//  ProductVariant: + couponTargets CouponProduct[]
+//  Outlet:         (orders Order[] is already there)
+//  Review:         (OrderItem.review stays as it is)
+//
+//  DELETE the old models: OrderStatusHistory (and the old Payment, which this one replaces)
+// ============================================================================

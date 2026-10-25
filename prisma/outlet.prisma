@@ -22,6 +22,7 @@ model Outlet {
   movements      StockMovement[] @relation("MovementOutlet")
   otherMovements StockMovement[] @relation("MovementOtherOutlet")
   orders         Order[]
+  orderItems     OrderItem[]
 
   @@unique([storeId, name])
   @@index([storeId, isActive])

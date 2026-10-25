@@ -62,29 +62,225 @@ export const findTakenSkusModel = async (storeId, skus, { productId } = {}) => {
     return [...new Set([...products, ...variants].map((r) => r.sku))];
 };
 
-// ---------- create ----------
-// P2002 = slug or sku already taken
-export const createProductModel = (storeId, { categoryIds, similarProductIds, variants, ...data }) => {
-    const hasVariants = variants.length > 0;
-
-    return prisma.product.create({
-        data: {
-            ...data,
-            storeId,
-            hasVariants,
-            quantity: hasVariants ? null : data.quantity ?? 0,
-            categories: { connect: connectIds(categoryIds) },
-            ...(similarProductIds.length > 0 && { similarProducts: { connect: connectIds(similarProductIds) } }),
-            ...(hasVariants && { variants: { create: variants } }), // storeId comes from the parent
-        },
+const getNextBatchNumber = async (tx, storeId) => {
+    const store = await tx.store.findUnique({
+        where: { id: storeId },
         select: {
-            id: true,
-            name: true,
-            slug: true
+            nextBatchNumber: true,
+        }
+    })
+
+    await tx.store.update({
+        where: { id: storeId },
+        data: {
+            nextBatchNumber: store.nextBatchNumber + 1,
+        }
+    })
+
+    return store.nextBatchNumber;
+}
+
+const createInitialInventory = async (
+    tx,
+    {
+        storeId,
+        outlet,
+        product,
+        variants = [],
+    }
+) => {
+    const lines = [];
+
+    if (!product.hasVariants && product.quantity > 0) {
+        lines.push({
+            productId: product.id,
+            variantId: null,
+            quantity: product.quantity,
+            unitCost: product.costPrice ?? 0,
+        });
+    }
+
+    if (product.hasVariants) {
+        for (const variant of variants) {
+            if (variant.quantity <= 0) {
+                continue;
+            }
+
+            lines.push({
+                productId: product.id,
+                variantId: variant.id,
+                quantity: variant.quantity,
+                unitCost: variant.costPrice ?? 0,
+            });
+        }
+    }
+
+    if (lines.length === 0) {
+        return;
+    }
+
+    const totalQuantity = lines.reduce(
+        (total, line) => total + line.quantity,
+        0
+    );
+
+    const totalCost = lines.reduce(
+        (total, line) =>
+            total + line.quantity * Number(line.unitCost),
+        0
+    );
+
+    const movement = await tx.stockMovement.create({
+        data: {
+            storeId,
+            outletId: outlet.id,
+
+            type: "STOCK_IN",
+
+            note: "Initial stock when product was created",
+
+            totalQuantity,
+            totalCost,
+            totalProducts: lines.length,
         },
     });
+
+    for (const line of lines) {
+        const batchNumber = await getNextBatchNumber(tx, storeId);
+
+        const batch = await tx.stockBatch.create({
+            data: {
+                storeId,
+                batchNumber,
+
+                movementId: movement.id,
+
+                productId: line.productId,
+                variantId: line.variantId,
+
+                outletId: outlet.id,
+
+                unitCost: line.unitCost,
+
+                quantity: line.quantity,
+                remainingQuantity: line.quantity,
+            },
+        });
+
+        await tx.stockMovementItem.create({
+            data: {
+                movementId: movement.id,
+
+                storeId,
+                outletId: outlet.id,
+                type: "STOCK_IN",
+
+                batchId: batch.id,
+
+                productId: line.productId,
+                variantId: line.variantId,
+
+                quantity: line.quantity,
+                unitCost: line.unitCost,
+            },
+        });
+
+        await tx.outletStock.create({
+            data: {
+                storeId,
+                outletId: outlet.id,
+
+                productId: line.productId,
+                variantId: line.variantId,
+
+                itemKey: line.variantId ?? line.productId,
+
+                quantity: line.quantity,
+
+                expiredQuantity: 0,
+
+                lastStockedAt: new Date(),
+            },
+        });
+    }
 };
 
+// ---------- create ----------
+// P2002 = slug or sku already taken
+export const createProductModel = async (
+    storeId,
+    {
+        categoryIds,
+        similarProductIds,
+        variants,
+        ...data
+    }
+) => {
+    return prisma.$transaction(async (tx) => {
+        const mainOutlet = await tx.outlet.findFirst({
+            where: {
+                storeId,
+                isMain: true,
+                isActive: true,
+            },
+        });
+
+        if (!mainOutlet) {
+            throw new AppError(
+                "Main outlet not found for this store",
+                constants.BadRequest
+            );
+        }
+
+        const hasVariants = variants.length > 0;
+
+        const product = await tx.product.create({
+            data: {
+                ...data,
+                storeId,
+
+                hasVariants,
+
+                quantity: hasVariants
+                    ? null
+                    : data.quantity ?? 0,
+
+                categories: {
+                    connect: connectIds(categoryIds),
+                },
+
+                ...(similarProductIds.length > 0 && {
+                    similarProducts: {
+                        connect: connectIds(similarProductIds),
+                    },
+                }),
+
+                ...(hasVariants && {
+                    variants: {
+                        create: variants,
+                    },
+                }),
+            },
+
+            include: {
+                variants: true,
+            },
+        });
+
+        await createInitialInventory(tx, {
+            storeId,
+            outlet: mainOutlet,
+            product,
+            variants: product.variants,
+        });
+
+        return {
+            id: product.id,
+            name: product.name,
+            slug: product.slug,
+        };
+    });
+};
 // ---------- read ----------
 export const getProductsModel = async (storeId, { page, limit, search, status, channel, audience, brandId, categoryId, isAvailable }) => {
     const where = {

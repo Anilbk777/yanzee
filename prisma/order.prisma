@@ -1,135 +1,257 @@
 enum OrderStatus {
   PENDING // placed, waiting for the store      -> "New"
-  ACCEPTED // store accepted                      -> "Processing"
-  DECLINED
-  READY // packed                                -> "Ready"
+  PROCESSING // store accepted                      -> "Processing"
   DISPATCHED // handed to courier                 -> "On the way"
   DELIVERED
   CANCELLED
+  RETURNED
 }
 
 enum PaymentMethod {
-  COD
+  COD // Cash on Delivery
+  CASH // Cash
+  BANK_TRANSFER
+  CARD
+  FONEPAY
   ESEWA
   KHALTI
 }
 
 enum PaymentStatus {
-  PENDING
+  UNPAID
+  PARTIAL_PAID
   PAID
-  FAILED
   REFUNDED
 }
 
+enum OrderChannel {
+  WEBSITE // a guest ordered on the store website
+  POS // staff made it at the POS counter
+  ADMIN // staff created it from the admin dashboard (phone / chat orders)
+}
+
+enum OrderActivityAction {
+  ORDER_CREATED
+  ORDER_EDITED
+  ORDER_STATUS_CHANGED
+  ORDER_NOTE_EDITED
+
+  ITEMS_EDITED
+
+  PAYMENT_METHOD_CHANGED
+  PAYMENT_STATUS_CHANGED
+
+  LABELS_CHANGED
+
+  DISCOUNT_CHANGED
+
+  CUSTOMER_NAME_EDITED
+  CUSTOMER_PHONE_EDITED
+  CUSTOMER_EMAIL_EDITED
+  CUSTOMER_ADDRESS_EDITED
+  CUSTOMER_NOTE_EDITED
+  CUSTOMER_PROVINCE_EDITED
+  CUSTOMER_CITY_EDITED
+  CUSTOMER_DISTRICT_EDITED
+  CUSTOMER_LANDMARK_EDITED
+}
+
+enum ActivityActorType {
+  USER // a staff member
+  CUSTOMER // the guest shopper (placing a website order)
+  SYSTEM // automatic: a payment gateway confirming a payment
+}
+
+enum PaymentKind {
+  PAYMENT // money received
+  REFUND // money given back
+}
+
+enum PaymentEntryStatus {
+  PENDING // online payment started, not confirmed yet
+  SUCCESS
+  FAILED
+}
+
+// ============================================================================
+// ORDER
+// ============================================================================
 model Order {
-  id          String @id @default(uuid())
-  storeId     String @map("store_id")
-  store       Store  @relation(fields: [storeId], references: [id], onDelete: Cascade)
-  orderNumber Int    @map("order_number") // #1001 per store
+  id          String       @id @default(uuid())
+  storeId     String       @map("store_id")
+  store       Store        @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  orderNumber Int          @map("order_number") // #1001 per store
+  channel     OrderChannel @default(WEBSITE)
+  status      OrderStatus  @default(PENDING)
+  labels      String[]     @default([]) // free tags shown on the order, e.g. "CNR"
 
-  status        OrderStatus @default(PENDING)
-  declineReason String?     @map("decline_reason")
-
-  // ---- the guest shopper (no account) ----
-  customerName  String  @map("customer_name")
-  customerPhone String  @map("customer_phone") // +97798XXXXXXXX, THE identity of a repeat buyer
-  customerEmail String? @map("customer_email")
+  // ---- who ordered ----
+  // The details below are ALWAYS filled (copied from the Customer when one is linked), so an
+  // old order never changes when a customer later edits their profile.
+  customerId    String?   @map("customer_id")
+  customer      Customer? @relation(fields: [customerId], references: [id], onDelete: SetNull)
+  customerName  String    @map("customer_name")
+  customerPhone String    @map("customer_phone") // +97798XXXXXXXX
+  customerEmail String?   @map("customer_email")
   province      String?
   district      String?
   city          String?
   address       String
   landmark      String?
-  customerNote  String? @map("customer_note")
+  customerNote  String?   @map("customer_note") // written by the shopper
+  orderNote     String?   @map("order_note") // internal note, written by staff
 
-  // ---- money (NPR) ----
-  subtotal    Decimal @db.Decimal(12, 2)
-  shippingFee Decimal @default(0) @map("shipping_fee") @db.Decimal(12, 2)
-  discount    Decimal @default(0) @db.Decimal(12, 2)
-  total       Decimal @db.Decimal(12, 2)
-
-  paymentMethod PaymentMethod @map("payment_method")
-  paymentStatus PaymentStatus @default(PENDING) @map("payment_status")
-
-  // ---- delivery ----
-  courierName    String? @map("courier_name")
-  trackingNumber String? @map("tracking_number")
-
-  acceptedAt   DateTime? @map("accepted_at")
-  readyAt      DateTime? @map("ready_at")
-  dispatchedAt DateTime? @map("dispatched_at")
-  deliveredAt  DateTime? @map("delivered_at")
-
-  // Secret link sent by SMS after delivery: /review/<reviewToken> (guests can't log in)
-  reviewToken String? @unique @map("review_token")
+  createdById String? @map("created_by_id") // the staff member for POS and ADMIN orders; null for website
+  createdBy   User?   @relation(fields: [createdById], references: [id], onDelete: SetNull)
 
   outletId String @map("outlet_id") // the outlet the stock was taken from
   outlet   Outlet @relation(fields: [outletId], references: [id], onDelete: Restrict)
 
-  items    OrderItem[]
-  history  OrderStatusHistory[]
-  payments Payment[]
+  // ---- money (NPR). The SERVER calculates every number here, never the browser/app ----
+  //   subtotal = sum of (unit price x quantity) of all lines, BEFORE any discount
+  //   discount = ALL discounts together = line discounts + orderDiscountAmount + couponDiscount
+  //   total    = subtotal - discount + deliveryFee
+  subtotal    Decimal @db.Decimal(12, 2)
+  discount    Decimal @default(0) @db.Decimal(12, 2)
+  deliveryFee Decimal @default(0) @map("delivery_fee") @db.Decimal(12, 2)
+  total       Decimal @db.Decimal(12, 2)
 
-  createdAt      DateTime        @default(now()) @map("created_at")
-  updatedAt      DateTime        @updatedAt @map("updated_at")
+  // discount typed on the WHOLE order by staff (Rs 30 off, or 5% off)
+  orderDiscountType   DiscountType? @map("order_discount_type")
+  orderDiscountValue  Decimal?      @map("order_discount_value") @db.Decimal(12, 2) // 30, or 5 (percent)
+  orderDiscountAmount Decimal       @default(0) @map("order_discount_amount") @db.Decimal(12, 2) // the money it came to
+
+  // discount from a coupon code (whole-order coupon, or the sum of a product coupon's lines)
+  couponId       String? @map("coupon_id")
+  coupon         Coupon? @relation(fields: [couponId], references: [id], onDelete: SetNull)
+  couponCode     String? @map("coupon_code") // copy, in case the coupon is edited later
+  couponDiscount Decimal @default(0) @map("coupon_discount") @db.Decimal(12, 2)
+
+  // ---- payment ----
+  paymentMethod PaymentMethod @map("payment_method")
+
+  paidAmount     Decimal       @default(0) @map("paid_amount") @db.Decimal(12, 2) // all money received so far
+  refundedAmount Decimal       @default(0) @map("refunded_amount") @db.Decimal(12, 2)
+  paymentStatus  PaymentStatus @default(UNPAID) @map("payment_status")
+
+  items          OrderItem[]
+  activities     OrderActivity[]
+  payments       Payment[]
   stockMovements StockMovement[]
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
 
   @@unique([storeId, orderNumber])
   @@index([storeId, status, createdAt]) // dashboard tabs
+  @@index([storeId, channel, createdAt]) // separate lists: website / POS / admin
   @@index([storeId, customerPhone]) // repeat customers + "track my order"
+  @@index([storeId, createdAt])
+ @@index([storeId, customerName])
   @@index([outletId])
   @@map("orders")
 }
 
+// ============================================================================
+// ORDER ITEM: one line = one product, or one variant
+// ============================================================================
 model OrderItem {
   id      String @id @default(uuid())
   orderId String @map("order_id")
   order   Order  @relation(fields: [orderId], references: [id], onDelete: Cascade)
 
-  productId String?         @map("product_id")
-  product   Product?        @relation(fields: [productId], references: [id], onDelete: SetNull)
+  productId String          @map("product_id")
+  product   Product         @relation(fields: [productId], references: [id], onDelete: Restrict)
   variantId String?         @map("variant_id")
   variant   ProductVariant? @relation(fields: [variantId], references: [id], onDelete: SetNull)
 
-  // snapshot of what was bought
+  // Snapshot of what was sold: stays right even if the product is renamed or removed
   productName String  @map("product_name")
+  variantName String? @map("variant_name")
+  sku         String?
   image       String?
-  size        String
-  unitPrice   Decimal @map("unit_price") @db.Decimal(12, 2)
-  quantity    Int
-  lineTotal   Decimal @map("line_total") @db.Decimal(12, 2)
+
+  unitPrice Decimal @map("unit_price") @db.Decimal(12, 2) // price for ONE unit at the time of the sale
+  quantity  Int
+
+  // discount typed on THIS line by staff. FIXED = this many rupees off the whole line (not per unit);
+  // PERCENT = percent of (unitPrice x quantity)
+  discountType   DiscountType? @map("discount_type")
+  discountValue  Decimal?      @map("discount_value") @db.Decimal(12, 2)
+  discountAmount Decimal       @default(0) @map("discount_amount") @db.Decimal(12, 2) // the money it came to
+
+  // this line's share of a PRODUCT-scope coupon (0 when the coupon is for the whole order)
+  couponDiscountAmount Decimal @default(0) @map("coupon_discount_amount") @db.Decimal(12, 2)
+
+  // = unitPrice x quantity - discountAmount - couponDiscountAmount
+  lineTotal Decimal @map("line_total") @db.Decimal(12, 2)
+  outletId  String  @map("outlet_id") // the outlet this line is fulfilled from
+  outlet    Outlet  @relation(fields: [outletId], references: [id], onDelete: Restrict)
 
   review Review?
 
   @@index([orderId])
+  @@index([outletId])
   @@map("order_items")
 }
 
-model OrderStatusHistory {
-  id          String      @id @default(uuid())
-  orderId     String      @map("order_id")
-  order       Order       @relation(fields: [orderId], references: [id], onDelete: Cascade)
-  status      OrderStatus
-  note        String?
-  changedById String?     @map("changed_by_id") // null = system / the shopper
-  changedBy   User?       @relation(fields: [changedById], references: [id], onDelete: SetNull)
-  createdAt   DateTime    @default(now()) @map("created_at")
+// ============================================================================
+// ORDER ACTIVITY: the timeline on the order page. Replaces OrderStatusHistory.
+// Only ADD rows, never edit or delete them.
+// ============================================================================
+model OrderActivity {
+  id      String @id @default(uuid())
+  orderId String @map("order_id")
+  order   Order  @relation(fields: [orderId], references: [id], onDelete: Cascade)
 
-  @@index([orderId])
-  @@map("order_status_history")
+  action OrderActivityAction
+  title  String // the sentence to show: "Changed status from Pending to Processing"
+
+  actorType ActivityActorType @map("actor_type")
+  actorId   String?           @map("actor_id") // the staff user; null for CUSTOMER / SYSTEM
+  actor     User?             @relation(fields: [actorId], references: [id], onDelete: SetNull)
+  actorName String?           @map("actor_name") // copied, so it still reads right if the user is renamed or deleted
+  actorRole String?           @map("actor_role") // copied: "owner", "manager" ...
+
+  // The details, different for each action:
+  //   STATUS_CHANGED   { from, to }
+  //   PAYMENT_CHANGED  { from, to, method, amount? }
+  //   ITEMS_EDITED     { before: { items, discount, delivery_charge }, after: { ... } }
+  //   LABELS_CHANGED   { added: [], removed: [] }
+  //   DISCOUNT_CHANGED { before: {...}, after: {...} }
+  meta Json?
+
+  createdAt DateTime @default(now()) @map("created_at") // = "at"
+
+  @@index([orderId, createdAt])
+  @@map("order_activities")
 }
 
+// ============================================================================
+// PAYMENT: every rupee received or given back. Several rows per order are normal
+// (a deposit now and the rest on delivery, a refund later, a cash + card split).
+// ============================================================================
 model Payment {
-  id              String        @id @default(uuid())
-  orderId         String        @map("order_id")
-  order           Order         @relation(fields: [orderId], references: [id], onDelete: Cascade)
-  method          PaymentMethod
-  status          PaymentStatus @default(PENDING)
-  amount          Decimal       @db.Decimal(12, 2)
-  gatewayRef      String?       @unique @map("gateway_ref") // Khalti pidx / eSewa transaction_uuid
-  transactionId   String?       @map("transaction_id")
-  gatewayResponse Json?         @map("gateway_response")
-  paidAt          DateTime?     @map("paid_at")
-  createdAt       DateTime      @default(now()) @map("created_at")
+  id      String @id @default(uuid())
+  orderId String @map("order_id")
+  order   Order  @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  kind   PaymentKind        @default(PAYMENT)
+  method PaymentMethod
+  status PaymentEntryStatus @default(SUCCESS)
+
+  amount   Decimal  @db.Decimal(12, 2) // the part that counts toward the order. Always positive: `kind` is the direction
+  tendered Decimal? @db.Decimal(12, 2) // CASH only: what the customer handed over. Change given = tendered - amount
+
+  reference       String? // bank slip no., card approval code, transaction number
+  gatewayRef      String? @unique @map("gateway_ref") // Khalti pidx / eSewa transaction_uuid
+  gatewayResponse Json?   @map("gateway_response")
+  note            String?
+
+  receivedById String? @map("received_by_id") // the staff member who took / returned the money
+  receivedBy   User?   @relation(fields: [receivedById], references: [id], onDelete: SetNull)
+
+  createdAt DateTime @default(now()) @map("created_at")
 
   @@index([orderId])
   @@map("payments")

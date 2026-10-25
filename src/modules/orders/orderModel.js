@@ -1,363 +1,377 @@
-import crypto from "node:crypto";
+import { randomUUID } from "crypto";
 import prisma from "../../config/dbConfig.js";
+import { fromCents, toCents } from "../../utils/money.js";
+import { allocateStock, splitLines } from "./orderAllocation.js";
 
-export class StockConflictError extends Error {
-    constructor({ productName, size, available }) {
-        super(`Only ${available} left of ${productName} (${size})`);
-        this.name = "StockConflictError";
-        this.available = available;
-    }
-}
-
-const pad = (value) => String(value).padStart(2, "0");
-
-const generateOrderNumber = () => {
-    const now = new Date();
-    const stamp = `${String(now.getUTCFullYear()).slice(2)}${pad(now.getUTCMonth() + 1)}${pad(now.getUTCDate())}`;
-    return `YNZ-${stamp}-${crypto.randomBytes(3).toString("hex").toUpperCase()}`;
-};
-
-export { generateOrderNumber };
-
-const round2 = (value) => Math.round((value + Number.EPSILON) * 100) / 100;
-
-export const resolveCheckoutItems = async (items) => {
-    if (!items || items.length === 0) return [];
-
-    const variants = await prisma.productVariant.findMany({
-        where: {
-            OR: items.map((item) => ({
-                productId: item.productId,
-                size: item.size,
-            })),
-        },
+const orderSelect = {
+    id: true, orderNumber: true, channel: true, status: true,
+    customerName: true, customerPhone: true,
+    subtotal: true, discount: true, deliveryFee: true, total: true,
+    orderDiscountType: true, orderDiscountValue: true, orderDiscountAmount: true,
+    paymentMethod: true, paymentStatus: true, paidAmount: true, createdAt: true,
+    outlet: { select: { id: true, name: true } },
+    items: {
         select: {
-            id: true,
-            size: true,
-            stock: true,
-            productId: true,
-            product: {
-                select: {
-                    id: true,
-                    shopId: true,
-                    name: true,
-                    image: true,
-                    status: true,
-                    price: true,
-                    discountPrice: true,
-                    shop: {
-                        select: {
-                            id: true,
-                            name: true,
-                        },
-                    },
-                },
-            },
+            id: true, productId: true, variantId: true, productName: true, variantName: true, sku: true,
+            unitPrice: true, quantity: true, discountType: true, discountValue: true, discountAmount: true, lineTotal: true,
+            outlet: { select: { id: true, name: true } },
         },
-    });
-
-    return variants.map((v) => ({
-        productId: v.product.id,
-        shopId: v.product.shopId,
-        shopName: v.product.shop.name,
-        productName: v.product.name,
-        image: v.product.image,
-        productStatus: v.product.status,
-        price: v.product.price ? v.product.price.toString() : null,
-        discountPrice: v.product.discountPrice ? v.product.discountPrice.toString() : null,
-        variantId: v.id,
-        size: v.size,
-        stock: v.stock,
-    }));
+    },
 };
 
-export const createCheckout = async ({
-    customerId,
-    cartId,
-    groups,
-    checkoutId,
-    paymentMethod,
-    address,
-    totalAmount,
-    variantIdsToRemove = [],
-    shippingFee = 0,
-}) => {
-    const orderRows = [];
-    const itemRows = [];
-    const historyRows = [];
+const CHANNEL_FILTER = { POS: "POS", WEB: "WEBSITE" }; // ALL = no filter, so it includes ADMIN too
 
-    for (const group of groups) {
-        const subtotal = round2(
-            group.items.reduce((sum, item) => sum + item.unitPrice * item.quantity, 0)
-        );
-        const orderShipping = round2(shippingFee * (group.subtotalShare || 0));
-        const orderId = crypto.randomUUID();
+const listSelect = {
+    id: true, orderNumber: true, status: true, channel: true,
+    customerName: true, customerPhone: true, customerEmail: true,
+    total: true, paymentMethod: true, paymentStatus: true,
+    createdAt: true, updatedAt: true,
+};
 
-        orderRows.push({
-            id: orderId,
-            orderNumber: generateOrderNumber(),
-            checkoutId,
-            customerId,
-            shopId: group.shopId,
-            status: "PENDING",
+// ---------- reads before the transaction (independent, run together) ----------
+export const getOrderRefsModel = async (storeId, customerId, productIds, variantIds) => {
+    const [outlets, customer, products] = await Promise.all([
+        prisma.outlet.findMany({
+            where: { storeId },
+            select: { id: true, name: true, address: true, isMain: true, isActive: true },
+        }),
+        prisma.customer.findFirst({
+            where: { id: customerId, storeId },
+            select: { id: true, name: true, phone: true, email: true },
+        }),
+        prisma.product.findMany({
+            where: { storeId, id: { in: productIds } },
+            select: {
+                id: true, name: true, sku: true, status: true, isAvailable: true, channel: true,
+                hasVariants: true, sellingPrice: true, imageUrls: true,
+                variants: { where: { id: { in: variantIds } }, select: { id: true, name: true, sku: true, sellingPrice: true } },
+            },
+        }),
+    ]);
+    return { outlets, customer, products };
+};
 
-            subtotal,
-            shippingFee: orderShipping,
-            discount: 0,
-            total: round2(subtotal + orderShipping),
-
-            paymentMethod,
-            paymentStatus: "PENDING",
-
-            recipientName: address.recipientName,
-            recipientPhone: address.recipientPhone,
-            province: address.province ?? null,
-            district: address.district ?? null,
-            city: address.city ?? null,
-            address: address.address,
-            customerNote: address.note ?? null,
-        });
-
-        historyRows.push({
-            id: crypto.randomUUID(),
-            orderId,
-            status: "PENDING",
-            note: "Order placed",
-            changedBy: customerId,
-        });
-
-        for (const item of group.items) {
-            itemRows.push({
-                id: crypto.randomUUID(),
-                orderId,
-                productId: item.productId,
-                variantId: item.variantId,
-                productName: item.productName,
-                image: item.image,
-                size: item.size,
-                unitPrice: item.unitPrice,
-                quantity: item.quantity,
-                lineTotal: round2(item.unitPrice * item.quantity),
-            });
-        }
-    }
-
-    return await prisma.$transaction(
+// ---------- create ----------
+// LOCK ORDER (always the same everywhere, so two requests can never deadlock):
+//   1. the store row   2. outlet_stocks rows sorted by (outlet_id, item_key)   3. batches
+// Throws an Error with code STOCK_SHORT (shortages) or STOCK_OUT_OF_SYNC.
+export const createOrderModel = (
+    storeId,
+    userId,
+    { order, customerId, lines, outletIds, preferredOutletId, payment, makeActivity }
+) =>
+    prisma.$transaction(
         async (tx) => {
-            // Create Checkout header record
-            await tx.checkout.create({
-                data: {
-                    id: checkoutId,
-                    customerId,
-                    totalAmount,
-                    paymentMethod,
-                    paymentStatus: "PENDING",
-                    fromCart: true,
-                },
+            // 1. Order number. This also locks the store row until commit.
+            const { nextOrderNumber } = await tx.store.update({
+                where: { id: storeId },
+                data: { nextOrderNumber: { increment: 1 } },
+                select: { nextOrderNumber: true },
+            });
+            const orderNumber = nextOrderNumber - 1;
+
+            // 2. Lock the stock rows of every item in every candidate outlet, then read them
+            const itemKeys = [...new Set(lines.map((l) => l.itemKey))];
+            const locked = await tx.$queryRaw`
+                SELECT outlet_id AS "outletId", item_key AS "itemKey", quantity
+                FROM outlet_stocks
+                WHERE store_id = ${storeId}
+                  AND outlet_id = ANY(${outletIds}::text[])
+                  AND item_key = ANY(${itemKeys}::text[])
+                ORDER BY outlet_id, item_key
+                FOR UPDATE
+            `;
+            const availability = new Map(locked.map((r) => [`${r.outletId}|${r.itemKey}`, r.quantity]));
+
+            // 3. Decide which outlet gives what
+            const { assignments, shortages } = allocateStock({ lines, availability, outletIds, preferredOutletId });
+            if (shortages.length > 0) throw Object.assign(new Error("Not enough stock"), { code: "STOCK_SHORT", shortages });
+
+            const rows = splitLines(lines, assignments);
+
+            // How much to take per (outlet, item)
+            const needs = new Map();
+            for (const a of assignments) {
+                const line = lines[a.index];
+                const k = `${a.outletId}|${line.itemKey}`;
+                const need = needs.get(k) ?? { outletId: a.outletId, itemKey: line.itemKey, productId: line.productId, variantId: line.variantId, qty: 0 };
+                need.qty += a.quantity;
+                needs.set(k, need);
+            }
+            const needList = [...needs.values()];
+
+            // 4. Lock and read the batches, earliest expiry first, expired ones skipped
+            const batchRows = await tx.$queryRaw`
+                SELECT b.id, b.outlet_id AS "outletId", COALESCE(b.variant_id, b.product_id) AS "itemKey",
+                       b.remaining_quantity AS remaining, b.unit_cost::text AS "unitCost"
+                FROM stock_batches b
+                JOIN unnest(${needList.map((n) => n.outletId)}::text[], ${needList.map((n) => n.itemKey)}::text[])
+                     AS n(outlet_id, item_key)
+                  ON b.outlet_id = n.outlet_id AND COALESCE(b.variant_id, b.product_id) = n.item_key
+                WHERE b.store_id = ${storeId}
+                  AND b.remaining_quantity > 0
+                  AND (b.expiry_date IS NULL OR b.expiry_date >= (now() AT TIME ZONE 'Asia/Kathmandu')::date)
+                ORDER BY b.outlet_id, COALESCE(b.variant_id, b.product_id), b.expiry_date NULLS LAST, b.created_at, b.id
+                FOR UPDATE OF b
+            `;
+            const batchesByNeed = new Map();
+            for (const b of batchRows) {
+                const k = `${b.outletId}|${b.itemKey}`;
+                if (!batchesByNeed.has(k)) batchesByNeed.set(k, []);
+                batchesByNeed.get(k).push(b);
+            }
+
+            // 5. Take the units from the batches (FEFO)
+            const picks = [];
+            for (const need of needList) {
+                let left = need.qty;
+                for (const b of batchesByNeed.get(`${need.outletId}|${need.itemKey}`) ?? []) {
+                    if (left === 0) break;
+                    const take = Math.min(b.remaining, left);
+                    picks.push({ batchId: b.id, outletId: need.outletId, productId: need.productId, variantId: need.variantId, itemKey: need.itemKey, quantity: take, unitCost: b.unitCost });
+                    left -= take;
+                }
+                if (left > 0) throw Object.assign(new Error("Stock batches out of sync"), { code: "STOCK_OUT_OF_SYNC", itemKey: need.itemKey });
+            }
+
+            // 6. Customer counter
+            await tx.customer.update({
+                where: { id: customerId, storeId },
+                data: { totalOrder: { increment: 1 } },
+                select: { id: true },
             });
 
-            // Validate stock and decrement
-            for (const group of groups) {
-                for (const item of group.items) {
-                    const variant = await tx.productVariant.findUnique({
-                        where: { id: item.variantId },
-                        select: { id: true, stock: true },
-                    });
+            // 7. The order, its lines, its first activity and its payment
+            const fulfilledFrom = [...rows.reduce((m, r) => m.set(r.outletId, (m.get(r.outletId) ?? 0) + r.quantity), new Map())]
+                .map(([outletId, quantity]) => ({ outletId, quantity }));
 
-                    if (!variant || variant.stock < item.quantity) {
-                        throw new StockConflictError({
-                            productName: item.productName,
-                            size: item.size,
-                            available: variant ? variant.stock : 0,
-                        });
-                    }
-
-                    await tx.productVariant.update({
-                        where: { id: item.variantId },
-                        data: {
-                            stock: { decrement: item.quantity },
+            const created = await tx.order.create({
+                data: {
+                    ...order,
+                    storeId, orderNumber, customerId, createdById: userId,
+                    items: {
+                        createMany: {
+                            data: rows.map((r) => ({
+                                productId: r.productId,
+                                variantId: r.variantId,
+                                outletId: r.outletId,
+                                productName: r.productName,
+                                variantName: r.variantName,
+                                sku: r.sku,
+                                image: r.image,
+                                unitPrice: fromCents(r.unitCents),
+                                quantity: r.quantity,
+                                discountType: r.discountType,
+                                discountValue: r.discountType === "FIXED" && r.discountCents > 0 ? fromCents(r.discountCents) : r.discountValue,
+                                discountAmount: fromCents(r.discountCents),
+                                lineTotal: fromCents(r.lineTotalCents),
+                            })),
                         },
-                    });
-                }
-            }
-
-            await tx.order.createMany({ data: orderRows });
-            await tx.orderItem.createMany({ data: itemRows });
-            await tx.orderStatusHistory.createMany({ data: historyRows });
-
-            // Remove checked-out items from user's cart
-            if (cartId && variantIdsToRemove.length > 0) {
-                await tx.cartItem.deleteMany({
-                    where: {
-                        cartId,
-                        variantId: { in: variantIdsToRemove },
                     },
-                });
+                    activities: { create: makeActivity({ orderNumber, fulfilledFrom }) },
+                    ...(payment && {
+                        payments: {
+                            create: {
+                                kind: "PAYMENT", method: payment.method, status: "SUCCESS",
+                                amount: payment.amount, reference: payment.reference, receivedById: userId,
+                            },
+                        },
+                    }),
+                },
+                select: orderSelect,
+            });
+
+            // 8. Stock history: one STOCK_OUT movement per outlet, one line per batch
+            const byOutlet = new Map();
+            for (const p of picks) {
+                if (!byOutlet.has(p.outletId)) byOutlet.set(p.outletId, []);
+                byOutlet.get(p.outletId).push(p);
+            }
+            const movementIds = new Map([...byOutlet.keys()].map((o) => [o, randomUUID()]));
+
+            await tx.stockMovement.createMany({
+                data: [...byOutlet].map(([outletId, list]) => ({
+                    id: movementIds.get(outletId),
+                    storeId, outletId, type: "STOCK_OUT", orderId: created.id,
+                    referenceNumber: `#${orderNumber}`,
+                    performedById: userId,
+                    totalQuantity: list.reduce((s, p) => s + p.quantity, 0),
+                    totalCost: fromCents(list.reduce((s, p) => s + p.quantity * toCents(p.unitCost), 0)),
+                    totalProducts: new Set(list.map((p) => p.itemKey)).size,
+                })),
+            });
+            await tx.stockMovementItem.createMany({
+                data: picks.map((p) => ({
+                    movementId: movementIds.get(p.outletId),
+                    storeId, outletId: p.outletId, type: "STOCK_OUT",
+                    batchId: p.batchId, productId: p.productId, variantId: p.variantId,
+                    quantity: p.quantity, unitCost: p.unitCost,
+                })),
+            });
+
+            // 9. Take the units off: batches, outlet stock, and the totals on variants / products.
+            //    One statement. The subtraction happens inside the database.
+            const variantTotals = new Map();
+            const productTotals = new Map();
+            for (const n of needList) {
+                const target = n.variantId ? variantTotals : productTotals;
+                const id = n.variantId ?? n.productId;
+                target.set(id, (target.get(id) ?? 0) + n.qty);
             }
 
-            return orderRows.map((row) => ({
-                id: row.id,
-                orderNumber: row.orderNumber,
-                checkoutId: row.checkoutId,
-                shopId: row.shopId,
-                subtotal: row.subtotal,
-                shippingFee: row.shippingFee,
-                total: row.total,
-            }));
+            const [res] = await tx.$queryRaw`
+                WITH
+                upd_batches AS (
+                    UPDATE stock_batches b
+                    SET remaining_quantity = b.remaining_quantity - t.qty, updated_at = now()
+                    FROM unnest(${picks.map((p) => p.batchId)}::text[], ${picks.map((p) => p.quantity)}::int[]) AS t(id, qty)
+                    WHERE b.id = t.id AND b.store_id = ${storeId}
+                    RETURNING b.id
+                ),
+                upd_stock AS (
+                    UPDATE outlet_stocks os
+                    SET quantity = os.quantity - s.qty, last_sold_at = now(), updated_at = now()
+                    FROM unnest(${needList.map((n) => n.outletId)}::text[], ${needList.map((n) => n.itemKey)}::text[], ${needList.map((n) => n.qty)}::int[])
+                         AS s(outlet_id, item_key, qty)
+                    WHERE os.outlet_id = s.outlet_id AND os.item_key = s.item_key
+                    RETURNING os.id
+                ),
+                upd_variants AS (
+                    UPDATE product_variants v
+                    SET quantity = v.quantity - a.qty, updated_at = now()
+                    FROM unnest(${[...variantTotals.keys()]}::text[], ${[...variantTotals.values()]}::int[]) AS a(id, qty)
+                    WHERE v.id = a.id AND v.store_id = ${storeId}
+                    RETURNING v.id
+                ),
+                upd_products AS (
+                    UPDATE products p
+                    SET quantity = p.quantity - a.qty, updated_at = now()
+                    FROM unnest(${[...productTotals.keys()]}::text[], ${[...productTotals.values()]}::int[]) AS a(id, qty)
+                    WHERE p.id = a.id AND p.store_id = ${storeId}
+                    RETURNING p.id
+                )
+                SELECT (SELECT count(*) FROM upd_batches)::int AS batches,
+                       (SELECT count(*) FROM upd_stock)::int AS stock,
+                       (SELECT count(*) FROM upd_variants)::int AS variants,
+                       (SELECT count(*) FROM upd_products)::int AS products
+            `;
+            if (res.batches !== picks.length || res.stock !== needList.length
+                || res.variants !== variantTotals.size || res.products !== productTotals.size) {
+                throw Object.assign(new Error("Stock rows out of sync"), { code: "STOCK_OUT_OF_SYNC" });
+            }
+
+            return { order: created, fulfilledFrom };
         },
-        { timeout: 20000 }
+        { timeout: 20000, maxWait: 10000 }
     );
+
+
+// -----------------LIST ORDERS-----------------
+
+// "1042", "1042", "9841", "sita": one search box for name, phone and order number
+const searchWhere = (search) => {
+    const term = search.replace(/^#/, "").trim();
+    const or = [
+        { customerName: { contains: term, mode: "insensitive" } },
+        { customerPhone: { startsWith: term } },
+    ];
+    if (/^\d{1,9}$/.test(term)) or.push({ orderNumber: Number(term) }); // exact match, fits an Int
+    return { OR: or };
 };
 
-export const getOrderById = async (orderId) => {
-    const order = await prisma.order.findUnique({
-        where: { id: orderId },
-        include: {
-            items: {
-                orderBy: { productName: "asc" },
-            },
-            history: {
-                orderBy: { createdAt: "asc" },
-            },
-        },
-    });
 
-    if (!order) return null;
-
-    return {
-        ...order,
-        subtotal: order.subtotal ? order.subtotal.toString() : "0",
-        shippingFee: order.shippingFee ? order.shippingFee.toString() : "0",
-        discount: order.discount ? order.discount.toString() : "0",
-        total: order.total ? order.total.toString() : "0",
-        items: (order.items ?? []).map((item) => ({
-            ...item,
-            unitPrice: item.unitPrice ? item.unitPrice.toString() : "0",
-            lineTotal: item.lineTotal ? item.lineTotal.toString() : "0",
-        })),
-        history: order.history ?? [],
-    };
-};
-
-export const listOrders = async ({ scope, ownerId, page, limit, status, search }) => {
+export const getOrdersModel = async (storeId, { page, limit, search, status, channel, from, to }) => {
     const where = {
-        [scope === "shop" ? "shopId" : "customerId"]: ownerId,
-        ...(status ? { status } : {}),
-        ...(search ? { orderNumber: { contains: search, mode: "insensitive" } } : {}),
+        storeId,
+        ...(status && { status }),
+        ...(CHANNEL_FILTER[channel] && { channel: CHANNEL_FILTER[channel] }),
+        ...((from || to) && { createdAt: { ...(from && { gte: from }), ...(to && { lte: to }) } }),
+        ...(search && searchWhere(search)),
     };
 
-    const [orders, total] = await Promise.all([
+    const [items, total] = await Promise.all([
         prisma.order.findMany({
             where,
-            orderBy: { createdAt: "desc" },
+            select: listSelect,
+            orderBy: [{ createdAt: "desc" }, { id: "desc" }], // id keeps pages stable when times tie
             skip: (page - 1) * limit,
             take: limit,
-            include: {
-                shop: {
-                    select: { name: true },
-                },
-                items: {
-                    orderBy: { productName: "asc" },
-                },
-            },
         }),
         prisma.order.count({ where }),
     ]);
 
-    const formattedOrders = orders.map((order) => {
-        const { shop, ...rest } = order;
-        return {
-            ...rest,
-            shopName: shop ? shop.name : null,
-            subtotal: order.subtotal ? order.subtotal.toString() : "0",
-            shippingFee: order.shippingFee ? order.shippingFee.toString() : "0",
-            discount: order.discount ? order.discount.toString() : "0",
-            total: order.total ? order.total.toString() : "0",
-            items: (order.items ?? []).map((item) => ({
-                ...item,
-                unitPrice: item.unitPrice ? item.unitPrice.toString() : "0",
-                lineTotal: item.lineTotal ? item.lineTotal.toString() : "0",
-            })),
-        };
-    });
+    // Total quantity per order, for the orders on this page only (one grouped query, uses the orderId index)
+    const sums = items.length
+        ? await prisma.orderItem.groupBy({
+              by: ["orderId"],
+              where: { orderId: { in: items.map((o) => o.id) } },
+              _sum: { quantity: true },
+          })
+        : [];
 
-    return { orders: formattedOrders, total };
+    return { items, total, quantities: new Map(sums.map((s) => [s.orderId, s._sum.quantity ?? 0])) };
 };
 
-export const getOrderForShopUpdate = async (shopId, orderId) => {
-    return await prisma.order.findFirst({
-        where: { id: orderId, shopId },
+
+const detailSelect = {
+    id: true, orderNumber: true, channel: true, status: true,
+    paymentStatus: true, paymentMethod: true,
+    createdAt: true, updatedAt: true,
+    createdBy: { select: { id: true, fullName: true } }, // null for website orders
+
+    // customer details as they were when the order was placed
+    customerName: true, customerPhone: true, customerEmail: true,
+    province: true, district: true, city: true, address: true, landmark: true,
+    customerNote: true, orderNote: true,
+    customer: { select: { id: true, totalOrder: true, createdAt: true } }, // the linked profile
+
+    // money
+    subtotal: true, discount: true, deliveryFee: true, total: true,
+    orderDiscountType: true, orderDiscountValue: true, orderDiscountAmount: true,
+    couponCode: true, couponDiscount: true,
+    paidAmount: true, refundedAmount: true,
+
+    outlet: { select: { id: true, name: true } }, // where the order was placed
+
+    items: {
+        orderBy: { id: "asc" },
         select: {
-            id: true,
-            status: true,
-            paymentStatus: true,
-            paymentMethod: true,
+            id: true, productId: true, variantId: true,
+            productName: true, variantName: true, sku: true, image: true,
+            unitPrice: true, quantity: true,
+            discountType: true, discountValue: true, discountAmount: true, couponDiscountAmount: true,
+            lineTotal: true,
+            outlet: { select: { id: true, name: true } }, // the outlet that packs this line
+        },
+    },
+
+    stockMovements: {
+        orderBy: { createdAt: "asc" },
+        select: {
+            id: true, type: true, referenceNumber: true, createdAt: true,
+            totalQuantity: true, totalCost: true, totalProducts: true,
+            outlet: { select: { id: true, name: true } },
+            performedBy: { select: { id: true, fullName: true } },
             items: {
-                select: { variantId: true, quantity: true },
+                select: {
+                    id: true, quantity: true, unitCost: true,
+                    batch: { select: { id: true, batchNumber: true, expiryDate: true } },
+                    product: { select: { id: true, name: true } },
+                    variant: { select: { id: true, name: true } },
+                },
             },
         },
-    });
+    },
+
+    activities: {
+        orderBy: [{ createdAt: "desc" }, { id: "desc" }], // newest first
+        select: {
+            id: true, action: true, title: true, meta: true, createdAt: true,
+            actorType: true, actorId: true, actorName: true, actorRole: true,
+        },
+    },
 };
 
-export const applyStatusChange = async ({
-    orderId,
-    currentStatus,
-    nextStatus,
-    declineReason,
-    note,
-    changedBy,
-    courierName,
-    trackingNumber,
-    restock,
-    paymentStatus,
-}) => {
-    const now = new Date();
-
-    const timestamps = {
-        ACCEPTED: { acceptedAt: now },
-        READY: { readyAt: now },
-        DISPATCHED: { dispatchedAt: now },
-        DELIVERED: { deliveredAt: now },
-    }[nextStatus] ?? {};
-
-    const restockable = restock?.filter((item) => item.variantId) ?? [];
-
-    return await prisma.$transaction(async (tx) => {
-        const updated = await tx.order.updateMany({
-            where: { id: orderId, status: currentStatus },
-            data: {
-                status: nextStatus,
-                paymentStatus,
-                ...(nextStatus === "DECLINED" ? { declineReason: declineReason ?? null } : {}),
-                ...(courierName !== undefined ? { courierName: courierName ?? null } : {}),
-                ...(trackingNumber !== undefined ? { trackingNumber: trackingNumber ?? null } : {}),
-                ...timestamps,
-            },
-        });
-
-        if (updated.count === 0) return null;
-
-        await tx.orderStatusHistory.create({
-            data: {
-                orderId,
-                status: nextStatus,
-                note: note ?? null,
-                changedBy: changedBy ?? null,
-            },
-        });
-
-        if (restockable.length > 0) {
-            for (const item of restockable) {
-                await tx.productVariant.update({
-                    where: { id: item.variantId },
-                    data: {
-                        stock: { increment: item.quantity },
-                    },
-                });
-            }
-        }
-
-        return { id: orderId, status: nextStatus, paymentStatus };
-    }, { timeout: 20000 });
-};
-
+// storeId is part of the where clause, so another store's order is simply "not found"
+export const getOrderByIdModel = (storeId, orderId) =>
+    prisma.order.findUnique({ where: { id: orderId, storeId }, select: detailSelect });

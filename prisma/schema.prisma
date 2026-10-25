@@ -33,11 +33,15 @@ model User {
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
-  memberships    StoreMember[]
-  invitesSent    StoreInvite[]
-  refreshTokens  RefreshToken[]
-  statusChanges  OrderStatusHistory[]
+  memberships   StoreMember[]
+  invitesSent   StoreInvite[]
+  refreshTokens RefreshToken[]
+
   stockMovements StockMovement[]
+
+  ordersCreated    Order[]
+  orderActivities  OrderActivity[]
+  paymentsReceived Payment[]
 
   @@map("users")
 }

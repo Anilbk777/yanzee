@@ -1,3 +1,10 @@
+
+// ============================================================================
+// REVIEW: one review per purchased item (orderItemId is unique).
+// A guest proves the purchase with a secret review link, not a login.
+// productId and variantId are COPIED from the order item when the review is created
+// (never taken from the request), so a review always belongs to what was really bought.
+// ============================================================================
 model Review {
   id      String @id @default(uuid())
   storeId String @map("store_id")
@@ -5,8 +12,13 @@ model Review {
  
   orderItemId String    @unique @map("order_item_id") // one review per purchased item
   orderItem   OrderItem @relation(fields: [orderItemId], references: [id], onDelete: Cascade)
-  productId   String?   @map("product_id")
-  product     Product?  @relation(fields: [productId], references: [id], onDelete: SetNull)
+ 
+  // A product that has orders cannot be deleted (OrderItem uses Restrict), so a review's
+  // product can never disappear: productId is required.
+  productId String          @map("product_id")
+  product   Product         @relation(fields: [productId], references: [id], onDelete: Restrict)
+  variantId String?         @map("variant_id") // null for a product without variants
+  variant   ProductVariant? @relation(fields: [variantId], references: [id], onDelete: SetNull)
  
   reviewerName String   @map("reviewer_name") // copied from the order
   rating       Int // 1..5   (CHECK in SQL)
@@ -18,6 +30,8 @@ model Review {
   updatedAt DateTime @updatedAt @map("updated_at")
  
   @@index([storeId, createdAt])
-  @@index([productId, isVisible, createdAt])
+  @@index([productId, isVisible, createdAt]) // product page: all its variants together
+  @@index([variantId, isVisible, createdAt]) // the reviews of ONE variant
   @@map("reviews")
 }
+ 
