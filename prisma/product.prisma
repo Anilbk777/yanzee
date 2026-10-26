@@ -86,7 +86,7 @@ model Product {
   @@index([storeId, status, createdAt])
   @@index([storeId, brandId, status])
   @@index([storeId, audience, status])
-  @@index([storeId, stockStatus])
+  @@index([storeId, stockStatus, isAvailable, hasVariants])
   @@map("products")
 }
 
@@ -120,6 +120,6 @@ model ProductVariant {
   reviews       Review[]
 
   @@unique([storeId, sku])
-  @@index([productId])
+  @@index([storeId, productId])
   @@map("product_variants")
 }

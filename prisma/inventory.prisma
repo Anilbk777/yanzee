@@ -43,7 +43,7 @@ model OutletStock {
  
   updatedAt DateTime @updatedAt @map("updated_at")
  
-  @@unique([outletId, itemKey])
+  @@unique([storeId, outletId, itemKey])
   @@index([outletId, stockStatus]) // POS: "low stock in this outlet"
   @@index([storeId, productId]) // "this product in ALL outlets"
   @@map("outlet_stocks")

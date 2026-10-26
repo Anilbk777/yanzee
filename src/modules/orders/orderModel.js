@@ -1,8 +1,10 @@
 import { randomUUID } from "crypto";
 import prisma from "../../config/dbConfig.js";
+import { Prisma } from "../../../generated/prisma/index.js";
 import { fromCents, toCents } from "../../utils/money.js";
 import { allocateStock, splitLines } from "./orderAllocation.js";
 import logger from "../../utils/logger.js";
+
 
 const orderSelect = {
     id: true, orderNumber: true, channel: true, status: true,
@@ -528,3 +530,4 @@ const detailSelect = {
 // storeId is part of the where clause, so another store's order is simply "not found"
 export const getOrderByIdModel = (storeId, orderId) =>
     prisma.order.findUnique({ where: { id: orderId, storeId }, select: detailSelect });
+

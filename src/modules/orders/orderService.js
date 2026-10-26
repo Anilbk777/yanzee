@@ -2,7 +2,7 @@ import logger from "../../utils/logger.js";
 import AppError from "../../utils/AppError.js";
 import constants from "../../utils/constants.js";
 import { fromCents } from "../../utils/money.js";
-import { getOrderRefsModel, createOrderModel, getOrdersModel, getOrderByIdModel } from "./orderModel.js";
+import { getOrderRefsModel, createOrderModel, getOrdersModel, getOrderByIdModel,  } from "./orderModel.js";
 import {
     resolveOrderOutlets,
     buildCreateOrderLines,
@@ -95,3 +95,4 @@ export const getOrderService = async (storeId, orderId) => {
         },
     };
 };
+

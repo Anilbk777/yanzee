@@ -6,7 +6,7 @@ import {planNewImage, publicIdOf, dispatchMoves, dispatchDeletes,planImageField 
 import { BASE_ONLY_FIELDS } from "./productValidation.js";
 import {
     createProductModel, getProductsModel, getProductByIdModel, getProductSnapshotModel,
-    updateProductModel, updateInventoryModel, deleteProductModel, validateRefsAndSkusModel
+    updateProductModel, updateInventoryModel, deleteProductModel, validateRefsAndSkusModel, getSellableItemsModel
 } from "./productModel.js";
 
 const SLUG_MAX_ATTEMPTS = 3;
@@ -352,4 +352,28 @@ export const deleteProductService = async (storeId, productId) => {
 
     logger.info({ storeId, productId }, "Product deleted successfully");
     return { statusCode: 200, message: "Product deleted successfully", data: { id: deleted.id, name: deleted.name } };
+};
+
+
+export const getSellableItemsService = async (storeId, query) => {
+    const { items, total } = await getSellableItemsModel(storeId, query);
+
+    return {
+        statusCode: 200,
+        message: "Products fetched successfully",
+        data: {
+            items: items.map(({ total: _total, ...i }) => ({
+                productId: i.productId,
+                variantId: i.variantId,
+                productName: i.productName,
+                variantName: i.variantName,
+                name: i.variantName ? `${i.productName} — ${i.variantName}` : i.productName,
+                sku: i.sku,
+                image: i.image,
+                quantity: i.quantity,
+                unitPrice: i.unitPrice,
+            })),
+            pagination: { page: query.page, limit: query.limit, total, totalPages: Math.ceil(total / query.limit) },
+        },
+    };
 };

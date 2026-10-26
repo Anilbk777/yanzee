@@ -9,7 +9,7 @@ import {
     OrderIdSchema,
     UpdateOrderSummarySchema,
     UpdateOrderCustomerSchema,
-    UpdateOrderStatusSchema
+    UpdateOrderStatusSchema,
 } from "./orderValidation.js";
 import {
     createOrderController,

@@ -1,4 +1,5 @@
 import prisma from "../../config/dbConfig.js";
+import { Prisma } from "../../../generated/prisma/index.js"; 
 import AppError from "../../utils/AppError.js";
 import constants from "../../utils/constants.js";
 const connectIds = (ids) => ids.map((id) => ({ id }));
@@ -382,4 +383,76 @@ export const validateRefsAndSkusModel = async (storeId, { categoryIds = [], bran
             ), '{}') AS "takenSkus"
     `;
     return row;
+};
+
+
+const escapeLike = (s) => s.replace(/[\\%_]/g, "\\$&");
+
+// Channel to the product channels it may sell (same rule as order creation)
+const CHANNEL_PRODUCTS = { POS: ["ALL", "POS"], ADMIN: ["ALL", "WEBSITE"] };
+
+export const getSellableItemsModel = async (
+    storeId,
+    { page, limit, search, outletId, categoryId, channel, includeOutOfStock }
+) => {
+    const like = search ? `%${escapeLike(search)}%` : null;
+
+    // Filters that apply to the product, for both the plain products and the variants
+    const channelSql = channel ? Prisma.sql`AND p.channel::text = ANY(${CHANNEL_PRODUCTS[channel]}::text[])` : Prisma.empty;
+    const categorySql = categoryId
+        ? Prisma.sql`AND EXISTS (
+              SELECT 1 FROM "_CategoryToProduct" cp WHERE cp."B" = p.id AND cp."A" = ${categoryId}::text
+          )`
+        : Prisma.empty;
+
+    // The search box: SKU, product name, variant name, or "product variant" together
+    const searchSql = like
+        ? Prisma.sql`AND (
+              i.sku ILIKE ${like}
+              OR i.product_name ILIKE ${like}
+              OR i.variant_name ILIKE ${like}
+              OR (i.product_name || ' ' || COALESCE(i.variant_name, '')) ILIKE ${like}
+          )`
+        : Prisma.empty;
+
+    // One outlet, or every ACTIVE outlet
+    const outletSql = outletId ? Prisma.sql`os.outlet_id = ${outletId}` : Prisma.sql`o.is_active`;
+    const stockSql = includeOutOfStock ? Prisma.empty : Prisma.sql`AND COALESCE(s.qty, 0) > 0`;
+
+    const rows = await prisma.$queryRaw(Prisma.sql`
+        WITH
+        items AS (
+            SELECT p.id AS product_id, NULL::text AS variant_id, p.id AS item_key,
+                   p.name AS product_name, NULL::text AS variant_name, p.sku AS sku,
+                   p.selling_price AS price, p.image_urls[1] AS image
+            FROM products p
+            WHERE p.store_id = ${storeId} AND NOT p.has_variants
+              AND p.status = 'ACTIVE' AND p.is_available ${channelSql} ${categorySql}
+            UNION ALL
+            SELECT p.id, v.id, v.id, p.name, v.name, v.sku, v.selling_price, p.image_urls[1]
+            FROM product_variants v
+            JOIN products p ON p.id = v.product_id AND p.store_id = v.store_id
+            WHERE v.store_id = ${storeId} AND p.has_variants
+              AND p.status = 'ACTIVE' AND p.is_available ${channelSql} ${categorySql}
+        ),
+        stock AS (
+            SELECT os.item_key, SUM(os.quantity)::int AS qty
+            FROM outlet_stocks os
+            JOIN outlets o ON o.id = os.outlet_id
+            WHERE os.store_id = ${storeId} AND ${outletSql}
+            GROUP BY os.item_key
+        )
+        SELECT i.product_id AS "productId", i.variant_id AS "variantId",
+               i.product_name AS "productName", i.variant_name AS "variantName",
+               i.sku, i.image, i.price::text AS "unitPrice",
+               COALESCE(s.qty, 0) AS quantity,
+               COUNT(*) OVER()::int AS total
+        FROM items i
+        LEFT JOIN stock s ON s.item_key = i.item_key
+        WHERE TRUE ${searchSql} ${stockSql}
+        ORDER BY i.product_name, i.variant_name NULLS FIRST, i.item_key
+        LIMIT ${limit} OFFSET ${(page - 1) * limit}
+    `);
+
+    return { items: rows, total: rows[0]?.total ?? 0 };
 };

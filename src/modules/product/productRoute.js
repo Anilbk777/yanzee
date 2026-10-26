@@ -12,6 +12,7 @@ import {
     UpdateSeoSchema,
     ProductIdSchema,
     ListProductsQuerySchema,
+    ListSellableItemsQuerySchema
 } from "./productValidation.js";
 import {
     createProductController,
@@ -22,7 +23,8 @@ import {
     updateCustomController,
     updateStatusController,
     updateSeoController,
-    deleteProductController
+    deleteProductController,
+    getSellableItemsController
 } from "./productController.js";
 
 const productRouter = Router();
@@ -36,6 +38,7 @@ productRouter.use(authenticateUser, verifyStore);
 
 // Read (all store members)
 productRouter.get("/", validateQuery(ListProductsQuerySchema), getProductsController);
+productRouter.get("/sellable-items", validateQuery(ListSellableItemsQuerySchema), getSellableItemsController);
 productRouter.get("/:productId", productId, getProductController);
 
 // Create

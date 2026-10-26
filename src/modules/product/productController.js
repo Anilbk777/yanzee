@@ -9,7 +9,8 @@ import {
     updateCustomService,
     updateStatusService,
     updateSeoService,
-    deleteProductService
+    deleteProductService,
+    getSellableItemsService
 } from "./productService.js";
 
 export const createProductController = asyncHandler(async (req, res) => {
@@ -46,4 +47,8 @@ export const updateSeoController = asyncHandler(async (req, res) => {
 
 export const deleteProductController = asyncHandler(async (req, res) => {
     ApiResponse(res, await deleteProductService(req.storeId, req.params.productId));
+});
+
+export const getSellableItemsController = asyncHandler(async (req, res) => {
+    ApiResponse(res, await getSellableItemsService(req.storeId, req.validatedQuery));
 });
