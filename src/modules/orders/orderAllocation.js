@@ -19,9 +19,11 @@ export const allocateStock = ({ lines, availability, outletIds, preferredOutletI
             continue;
         }
 
+        const preferred = line.preferredOutletId ?? preferredOutletId;
+
         const ordered = [...outletIds].sort((a, b) => {
-            if (a === preferredOutletId) return -1;
-            if (b === preferredOutletId) return 1;
+            if (a === preferred) return -1;
+            if (b === preferred) return 1;
             return have(b) - have(a) || a.localeCompare(b);
         });
 

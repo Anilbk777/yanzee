@@ -1,5 +1,6 @@
 import prisma from "../../config/dbConfig.js";
-
+import AppError from "../../utils/AppError.js";
+import constants from "../../utils/constants.js";
 const connectIds = (ids) => ids.map((id) => ({ id }));
 
 // ---------- selects ----------
@@ -62,23 +63,21 @@ export const findTakenSkusModel = async (storeId, skus, { productId } = {}) => {
     return [...new Set([...products, ...variants].map((r) => r.sku))];
 };
 
-const getNextBatchNumber = async (tx, storeId) => {
-    const store = await tx.store.findUnique({
+/**
+ * Atomically allocates `count` consecutive batch numbers in a single DB round-trip.
+ * Returns the first number in the allocated range so callers can use
+ * firstBatch, firstBatch+1, firstBatch+2, … without any further DB calls.
+ */
+const allocateBatchNumbers = async (tx, storeId, count) => {
+    const updated = await tx.store.update({
         where: { id: storeId },
-        select: {
-            nextBatchNumber: true,
-        }
-    })
-
-    await tx.store.update({
-        where: { id: storeId },
-        data: {
-            nextBatchNumber: store.nextBatchNumber + 1,
-        }
-    })
-
-    return store.nextBatchNumber;
-}
+        data: { nextBatchNumber: { increment: count } },
+        select: { nextBatchNumber: true },
+    });
+    // nextBatchNumber is now the value AFTER the increment, so the first
+    // allocated number is (updatedValue - count).
+    return updated.nextBatchNumber - count;
+};
 
 const createInitialInventory = async (
     tx,
@@ -102,10 +101,7 @@ const createInitialInventory = async (
 
     if (product.hasVariants) {
         for (const variant of variants) {
-            if (variant.quantity <= 0) {
-                continue;
-            }
-
+            if (variant.quantity <= 0) continue;
             lines.push({
                 productId: product.id,
                 variantId: variant.id,
@@ -115,93 +111,78 @@ const createInitialInventory = async (
         }
     }
 
-    if (lines.length === 0) {
-        return;
-    }
+    if (lines.length === 0) return;
 
-    const totalQuantity = lines.reduce(
-        (total, line) => total + line.quantity,
-        0
-    );
-
+    const totalQuantity = lines.reduce((total, line) => total + line.quantity, 0);
     const totalCost = lines.reduce(
-        (total, line) =>
-            total + line.quantity * Number(line.unitCost),
+        (total, line) => total + line.quantity * Number(line.unitCost),
         0
     );
 
+    // 1 query: create movement header
     const movement = await tx.stockMovement.create({
         data: {
             storeId,
             outletId: outlet.id,
-
             type: "STOCK_IN",
-
             note: "Initial stock when product was created",
-
             totalQuantity,
             totalCost,
             totalProducts: lines.length,
         },
     });
 
-    for (const line of lines) {
-        const batchNumber = await getNextBatchNumber(tx, storeId);
+    // 1 query: allocate ALL batch numbers at once (was 2 queries × N lines)
+    const firstBatchNumber = await allocateBatchNumbers(tx, storeId, lines.length);
+
+    // Process each line: stockBatch must be created first (batch.id is needed),
+    // then stockMovementItem + outletStock can run in parallel.
+    for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        const batchNumber = firstBatchNumber + i;
 
         const batch = await tx.stockBatch.create({
             data: {
                 storeId,
                 batchNumber,
-
                 movementId: movement.id,
-
                 productId: line.productId,
                 variantId: line.variantId,
-
                 outletId: outlet.id,
-
                 unitCost: line.unitCost,
-
                 quantity: line.quantity,
                 remainingQuantity: line.quantity,
             },
         });
 
-        await tx.stockMovementItem.create({
-            data: {
-                movementId: movement.id,
-
-                storeId,
-                outletId: outlet.id,
-                type: "STOCK_IN",
-
-                batchId: batch.id,
-
-                productId: line.productId,
-                variantId: line.variantId,
-
-                quantity: line.quantity,
-                unitCost: line.unitCost,
-            },
-        });
-
-        await tx.outletStock.create({
-            data: {
-                storeId,
-                outletId: outlet.id,
-
-                productId: line.productId,
-                variantId: line.variantId,
-
-                itemKey: line.variantId ?? line.productId,
-
-                quantity: line.quantity,
-
-                expiredQuantity: 0,
-
-                lastStockedAt: new Date(),
-            },
-        });
+        // stockMovementItem and outletStock are independent — run in parallel
+        await Promise.all([
+            tx.stockMovementItem.create({
+                data: {
+                    movementId: movement.id,
+                    storeId,
+                    outletId: outlet.id,
+                    type: "STOCK_IN",
+                    batchId: batch.id,
+                    productId: line.productId,
+                    variantId: line.variantId,
+                    quantity: line.quantity,
+                    unitCost: line.unitCost,
+                },
+            }),
+            tx.outletStock.create({
+                data: {
+                    storeId,
+                    outletId: outlet.id,
+                    productId: line.productId,
+                    variantId: line.variantId,
+                    itemKey: line.variantId ?? line.productId,
+                    quantity: line.quantity,
+                    expiredQuantity: 0,
+                    lastStockedAt: new Date(),
+                },
+            }),
+        ]);
     }
 };
 
@@ -213,6 +194,7 @@ export const createProductModel = async (
         categoryIds,
         similarProductIds,
         variants,
+        brandId,   // extract so we don't spread it as a raw scalar (Prisma checked-input mode requires relation connect)
         ...data
     }
 ) => {
@@ -237,13 +219,18 @@ export const createProductModel = async (
         const product = await tx.product.create({
             data: {
                 ...data,
-                storeId,
+                store: { connect: { id: storeId } },          // connect store relation
+
+                ...(brandId && {
+                    brand: { connect: { id: brandId } },       // Fix 3: connect brand relation (raw brandId rejected in checked-input mode)
+                }),
 
                 hasVariants,
 
-                quantity: hasVariants
-                    ? null
-                    : data.quantity ?? 0,
+                // quantity is a non-nullable Int (default 0) — never pass null.
+                // For variant products, omit it so Prisma uses the default (0).
+                // For simple products, fall back to 0 if not provided.
+                ...(!hasVariants && { quantity: data.quantity ?? 0 }),
 
                 categories: {
                     connect: connectIds(categoryIds),
@@ -257,6 +244,8 @@ export const createProductModel = async (
 
                 ...(hasVariants && {
                     variants: {
+                        // storeId is part of the composite FK (productId, storeId) and is
+                        // auto-filled by Prisma from the parent product — do NOT pass it manually.
                         create: variants,
                     },
                 }),
@@ -279,7 +268,7 @@ export const createProductModel = async (
             name: product.name,
             slug: product.slug,
         };
-    });
+    }, { timeout: 15000 }); // 15s — inventory creation involves N batches of parallel writes
 };
 // ---------- read ----------
 export const getProductsModel = async (storeId, { page, limit, search, status, channel, audience, brandId, categoryId, isAvailable }) => {

@@ -62,6 +62,11 @@ export const findSessionByToken = async (tokenHash) => {
             user: {
                 select: {
                     id: true,
+                    fullName: true,
+                    email: true,
+                    phone: true,
+                    role: true,
+                    isActive: true
                 }
             }
         }

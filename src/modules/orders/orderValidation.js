@@ -95,3 +95,58 @@ export const ListOrdersQuerySchema = z
 export const OrderIdSchema = z.object({
     orderId: z.uuid("Invalid order id"),
 });
+
+const emailField = z
+    .union([z.literal(""), z.string().trim().toLowerCase().max(255, "Email is too long").pipe(z.email("Invalid email format"))])
+    .transform((v) => v || null)
+    .nullish();
+
+export const UpdateOrderSummarySchema = z
+    .object({
+        items: z.array(OrderItemSchema)
+            .min(1, "An order needs at least one item. Cancel the order instead")
+            .max(100, "At most 100 items per order").optional(),
+        deliveryFee: money("Delivery fee must be a number").optional(),
+        discount: DiscountSchema.nullish(), // object = set, null = remove, omitted = unchanged
+        paymentStatus: z.enum(["UNPAID", "PARTIAL_PAID", "PAID"], "Invalid payment status").optional(),
+        paidAmount: money("Paid amount must be a number").optional(),
+        paymentReference: nullableText(100, "Payment reference is too long"),
+    })
+    .superRefine((o, ctx) => {
+        const issue = (path, message) => ctx.addIssue({ code: "custom", path, message });
+
+        // if (o.items === undefined && o.deliveryFee === undefined && o.discount === undefined && o.paymentStatus === undefined) {
+        //     issue([], "Nothing to update");
+        // }
+        if (o.paymentStatus === "PARTIAL_PAID" && !(o.paidAmount > 0)) issue(["paidAmount"], "Enter the amount paid so far");
+        if (o.paymentStatus !== "PARTIAL_PAID" && o.paidAmount !== undefined) issue(["paidAmount"], "Paid amount is only used for partial payments");
+
+        const seen = new Set();
+        o.items?.forEach((item, i) => {
+            const key = `${item.productId}:${item.variantId ?? ""}`;
+            if (seen.has(key)) issue(["items", i], "This item is already in the order. Change its quantity instead");
+            seen.add(key);
+        });
+    });
+
+export const UpdateOrderCustomerSchema = z
+    .object({
+        name: z.string().trim().min(1, "Name is required").max(100, "Name is too long").optional(),
+        email: emailField,
+        phone: z
+            .string({
+                error: "Phone number is required",
+            })
+            .trim()
+            .min(1, "Phone number is required")
+            .length(10, "Phone must be exactly 10 digits")
+            .regex(/^[0-9]{10}$/, "Phone must contain only digits")
+            .optional(),
+        province: nullableText(100, "Province is too long"),
+        district: nullableText(100, "District is too long"),
+        city: nullableText(100, "City is too long"),
+        address: z.string().trim().min(1, "Address is required").max(200, "Address cannot exceed 200 characters").optional(),
+        landmark: nullableText(150, "Landmark is too long"),
+        customerNote: nullableText(500, "Customer note cannot exceed 500 characters"),
+    })
+    .refine((o) => Object.values(o).some((v) => v !== undefined), { message: "At least one field must be provided" });
