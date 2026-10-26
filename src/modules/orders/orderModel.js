@@ -499,7 +499,7 @@ const detailSelect = {
     },
 
     stockMovements: {
-        orderBy: { createdAt: "asc" },
+        orderBy: { createdAt: "desc" },
         select: {
             id: true, type: true, referenceNumber: true, createdAt: true,
             totalQuantity: true, totalCost: true, totalProducts: true,

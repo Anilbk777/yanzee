@@ -468,3 +468,104 @@ export const buildCustomerActivities = ({ actor, changes, moved, order, target }
         },
     }));
 };
+
+
+// ============================== Order Status change helpers =========================================================
+
+export const STATUS_LABEL = {
+    PENDING: "Pending", PROCESSING: "Processing", DISPATCHED: "Dispatched",
+    DELIVERED: "Delivered", CANCELLED: "Cancelled", RETURNED: "Returned",
+};
+
+const TRANSITIONS = {
+    PENDING: ["PROCESSING", "CANCELLED"],
+    PROCESSING: ["DISPATCHED", "DELIVERED", "CANCELLED"],
+    DISPATCHED: ["DELIVERED", "RETURNED", "CANCELLED"],
+    DELIVERED: ["RETURNED"],
+    CANCELLED: [],
+    RETURNED: [],
+};
+
+export const assertTransition = (from, to) => {
+    const allowed = TRANSITIONS[from];
+    if (allowed.includes(to)) return;
+
+    if (allowed.length === 0) {
+        throw new AppError(`A ${STATUS_LABEL[from].toLowerCase()} order can't be changed any more`, constants.Conflict);
+    }
+    throw new AppError(
+        `An order can't move from ${STATUS_LABEL[from]} to ${STATUS_LABEL[to]}. Allowed: ${allowed.map((s) => STATUS_LABEL[s]).join(", ")}`,
+        constants.Conflict
+    );
+};
+
+
+
+// Units go back for a cancel, and for a return unless the staff says the goods are unusable
+export const shouldRestoreStock = ({ status, restoreStock }) =>
+    status === "CANCELLED" || (status === "RETURNED" && restoreStock !== false);
+
+// Every unit this order still holds goes back to its own batch
+export const toRestorePicks = (netPicks) =>
+    netPicks.map((p) => ({
+        type: "STOCK_RESTORE", sign: +1,
+        batchId: p.batchId, outletId: p.outletId, productId: p.productId, variantId: p.variantId,
+        itemKey: p.itemKey, quantity: p.net, unitCost: p.unitCost, sellable: p.sellable,
+    }));
+
+// Money side of a status change. Returns what to save and what to say about it.
+export const planPayment = (order, { status, markAsPaid }) => {
+    const paid = toCents(order.paidAmount);
+    const refunded = toCents(order.refundedAmount);
+    const net = paid - refunded;
+    const total = toCents(order.total);
+
+    // Cancel / return: the customer gets back whatever they still have paid in
+    if ((status === "CANCELLED" || status === "RETURNED") && net > 0) {
+        return {
+            kind: "refund", amount: net,
+            patch: { refundedAmount: fromCents(refunded + net), paymentStatus: "REFUNDED" },
+            payment: { kind: "REFUND", method: order.paymentMethod, status: "SUCCESS", amount: fromCents(net), note: `Order ${status.toLowerCase()}` },
+        };
+    }
+
+    // Delivered and the balance was collected at the door
+    if (status === "DELIVERED" && markAsPaid && net < total) {
+        const due = total - net;
+        return {
+            kind: "collect", amount: due,
+            patch: { paidAmount: fromCents(paid + due), paymentStatus: "PAID" },
+            payment: { kind: "PAYMENT", method: order.paymentMethod, status: "SUCCESS", amount: fromCents(due), note: "Collected on delivery" },
+        };
+    }
+    return null;
+};
+
+export const buildActivities = ({ actor, order, payload, restores, money }) => {
+    const base = actorFields(actor);
+    const restoredUnits = restores.reduce((s, r) => s + r.quantity, 0);
+
+    const entries = [
+        {
+            ...base, action: "ORDER_STATUS_CHANGED",
+            title: `Changed status from ${STATUS_LABEL[order.status]} to ${STATUS_LABEL[payload.status]}`,
+            meta: {
+                from: order.status, to: payload.status,
+                reason: payload.reason ?? null,
+                stockRestored: restoredUnits,
+                refunded: money?.kind === "refund" ? fromCents(money.amount) : null,
+            },
+        },
+    ];
+
+    if (money) {
+        entries.push({
+            ...base, action: "PAYMENT_STATUS_CHANGED",
+            title: money.kind === "refund"
+                ? `Refund of ${rs(money.amount)} recorded because the order was ${payload.status.toLowerCase()}`
+                : `Recorded ${rs(money.amount)} collected on delivery`,
+            meta: { from: order.paymentStatus, to: money.patch.paymentStatus, amount: fromCents(money.amount), method: order.paymentMethod },
+        });
+    }
+    return entries;
+};

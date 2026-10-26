@@ -13,7 +13,7 @@ import {
     mapCreateOrderError,
     formatOrderListItem,
     formatOrderDetails,
-} from "./orderUtils/orderCreate.js";
+} from "./orderHelpers/orderCreateHelper.js";
 
 // ====================== 1. CREATE ORDER ======================
 export const createOrderService = async (storeId, actor, payload) => {

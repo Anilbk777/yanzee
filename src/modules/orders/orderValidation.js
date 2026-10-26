@@ -150,3 +150,21 @@ export const UpdateOrderCustomerSchema = z
         customerNote: nullableText(500, "Customer note cannot exceed 500 characters"),
     })
     .refine((o) => Object.values(o).some((v) => v !== undefined), { message: "At least one field must be provided" });
+
+
+export const UpdateOrderStatusSchema = z
+    .object({
+        status: z.enum(["PENDING", "PROCESSING", "DISPATCHED", "DELIVERED", "CANCELLED", "RETURNED"], "Invalid status"),
+        reason: nullableText(300, "Reason cannot exceed 300 characters"),
+        restoreStock: z.boolean("restoreStock must be true or false").optional(), // RETURNED only (default true)
+        markAsPaid: z.boolean("markAsPaid must be true or false").optional(), // DELIVERED only
+    })
+    .superRefine((o, ctx) => {
+        const issue = (path, message) => ctx.addIssue({ code: "custom", path, message });
+
+        if ((o.status === "CANCELLED" || o.status === "RETURNED") && !o.reason) {
+            issue(["reason"], "Enter the reason");
+        }
+        if (o.restoreStock !== undefined && o.status !== "RETURNED") issue(["restoreStock"], "Only used when marking an order as returned");
+        if (o.markAsPaid !== undefined && o.status !== "DELIVERED") issue(["markAsPaid"], "Only used when marking an order as delivered");
+    });

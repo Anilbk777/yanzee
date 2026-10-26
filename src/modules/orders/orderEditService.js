@@ -17,7 +17,13 @@ import {
     toPayments,
     planCustomerChanges,
     buildCustomerActivities,
-} from "./orderUtils/orderEdit.js";
+    STATUS_LABEL,
+    assertTransition,
+    shouldRestoreStock,
+    toRestorePicks,
+    planPayment,
+    buildActivities,
+} from "./orderHelpers/orderEditHelper.js";
 import {
     getOrderForEditModel,
     getOrderForCustomerEditModel,
@@ -26,7 +32,10 @@ import {
     findCustomerByPhoneModel,
     updateOrderSummaryModel,
     updateOrderCustomerModel,
+    getOrderForStatusModel,
+    updateOrderStatusModel
 } from "./orderEditModel.js";
+import { success } from "zod";
 
 // ---------- loading ----------
 // The order, the active outlets and (only when items are edited) the stock history: all at once
@@ -136,6 +145,54 @@ export const updateOrderCustomerService = async (storeId, actor, orderId, payloa
     return {
         statusCode: 200,
         message: "Customer details updated successfully",
+        data: {
+            id: order.id,
+            orderNumber: order.orderNumber,
+        },
+    };
+};
+
+
+
+// ======================3 CHANGE STATUS ======================
+export const updateOrderStatusService = async (storeId, actor, orderId, payload) => {
+    logger.info({ storeId, orderId, status: payload.status }, "Changing order status");
+
+    // The order and (only when stock goes back) the stock history: independent, so together
+    const [order, netPicks] = await Promise.all([
+        getOrderForStatusModel(storeId, orderId),
+        shouldRestoreStock(payload) ? getOrderNetPicksModel(storeId, orderId) : [],
+    ]);
+    if (!order) throw new AppError("Order not found", constants.NotFound);
+
+    if (order.status === payload.status) {
+        throw new AppError(`This order is already ${STATUS_LABEL[order.status].toLowerCase()}`, constants.Conflict);
+    }
+    assertTransition(order.status, payload.status);
+
+    const restores = toRestorePicks(netPicks);
+    const money = planPayment(order, payload);
+
+    try {
+        await updateOrderStatusModel(storeId, actor.id, {
+            orderId,
+            orderNumber: order.orderNumber,
+            expectedUpdatedAt: order.updatedAt,
+            patch: { status: payload.status, ...(money?.patch ?? {}) },
+            payments: money ? [{ ...money.payment, receivedById: actor.id }] : [],
+            restores,
+            stockNote: `Order ${payload.status.toLowerCase()}${payload.reason ? `: ${payload.reason}` : ""}`,
+            activities: buildActivities({ actor, order, payload, restores, money }),
+        });
+    } catch (error) {
+        throw mapEditError(error);
+    }
+
+    logger.info({ storeId, orderId, from: order.status, to: payload.status }, "Order status changed");
+    return {
+        success: true,
+        statusCode: 200,
+        message: `Order marked as ${STATUS_LABEL[payload.status].toLowerCase()}`,
         data: {
             id: order.id,
             orderNumber: order.orderNumber,

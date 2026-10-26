@@ -9,6 +9,7 @@ import {
     OrderIdSchema,
     UpdateOrderSummarySchema,
     UpdateOrderCustomerSchema,
+    UpdateOrderStatusSchema
 } from "./orderValidation.js";
 import {
     createOrderController,
@@ -16,6 +17,7 @@ import {
     getOrderController,
     updateOrderSummaryController,
     updateOrderCustomerController,
+    updateOrderStatusController
 } from "./orderController.js";
 
 const orderRouter = Router();
@@ -58,5 +60,12 @@ orderRouter.patch(
     validateRequest(UpdateOrderCustomerSchema),
     updateOrderCustomerController
 );
+
+orderRouter.patch(
+    "/:orderId/status",
+    requireStoreRole("OWNER", "MANAGER", "ORDER_MANAGER"),
+    validateParams(OrderIdSchema),
+    validateRequest(UpdateOrderStatusSchema),
+    updateOrderStatusController);
 
 export default orderRouter;

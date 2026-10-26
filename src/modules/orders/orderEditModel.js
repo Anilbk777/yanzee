@@ -1,7 +1,7 @@
 import prisma from "../../config/dbConfig.js";
 import { fromCents } from "../../utils/money.js";
 import { allocateStock, splitLines } from "./orderAllocation.js";
-import { lockAvailability, lockBatches, pickBatches, recordMovements, applyStock } from "./orderUtils/orderStock.js";
+import { lockAvailability, lockBatches, pickBatches, recordMovements, applyStock } from "./orderHelpers/orderStockHelper.js";
 
 // ---------- reads ----------
 export const getOrderForEditModel = (storeId, orderId) =>
@@ -320,3 +320,50 @@ export const updateOrderCustomerModel = (storeId, p) =>
             select: { id: true },
         });
     });
+
+
+
+// ============================= UPDATE ORDER STATUS ======================================
+
+export const getOrderForStatusModel = (storeId, orderId) =>
+    prisma.order.findUnique({
+        where: { id: orderId, storeId },
+        select: {
+            id: true, orderNumber: true, status: true, channel: true, updatedAt: true,
+            paymentMethod: true, paymentStatus: true, total: true, paidAmount: true, refundedAmount: true,
+        },
+    });
+
+// LOCK ORDER (same as everywhere): order row, then outlet_stocks sorted, then batches sorted.
+// p.restores = picks with type "STOCK_RESTORE" and sign +1, one per batch
+export const updateOrderStatusModel = (storeId, userId, p) =>
+    prisma.$transaction(
+        async (tx) => {
+            await guardOrder(tx, storeId, p.orderId, p.expectedUpdatedAt);
+
+            if (p.restores.length > 0) {
+                await lockAvailability(
+                    tx, storeId,
+                    [...new Set(p.restores.map((r) => r.outletId))],
+                    [...new Set(p.restores.map((r) => r.itemKey))]
+                );
+                await lockBatches(tx, storeId, p.restores.map((r) => r.batchId));
+            }
+
+            await tx.order.update({
+                where: { id: p.orderId, storeId },
+                data: {
+                    ...p.patch,
+                    ...(p.payments.length > 0 && { payments: { create: p.payments } }),
+                    activities: { create: p.activities },
+                },
+                select: { id: true },
+            });
+
+            await recordMovements(tx, {
+                storeId, userId, orderId: p.orderId, orderNumber: p.orderNumber, picks: p.restores, note: p.stockNote,
+            });
+            await applyStock(tx, storeId, p.restores);
+        },
+        { timeout: 20000, maxWait: 10000 }
+    );
