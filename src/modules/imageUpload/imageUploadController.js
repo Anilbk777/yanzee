@@ -11,6 +11,6 @@ export const uploadImageController = asyncHandler(async (req, res) => {
 });
 
 export const uploadStoreImageController = asyncHandler(async (req, res) => {
-    const response = await uploadStoreImageService(req.file, req.store);
+    const response = await uploadStoreImageService(req.file, req.storeId);
     ApiResponse(res, response);
 });

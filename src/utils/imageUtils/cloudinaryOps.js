@@ -2,6 +2,18 @@ import { randomUUID } from "crypto";
 import streamifier from "streamifier";
 import cloudinary from "../../config/cloudinaryConfig.js"; // configured SDK, safe in the API and the worker
 import logger from "../logger.js";
+// Extract Cloudinary public_id from a full URL
+// e.g. https://res.cloudinary.com/cloud/image/upload/v123/stores/x/logos/y.webp
+//   →  stores/x/logos/y
+const extractPublicId = (url) => {
+    const marker = "/upload/";
+    const idx = url.indexOf(marker);
+    if (idx === -1) return null;
+    let path = url.slice(idx + marker.length); // "v123/stores/.../y.webp" or "stores/.../y.webp"
+    path = path.replace(/^v\d+\//, "");        // strip optional version segment
+    path = path.replace(/\.[^/.]+$/, "");      // strip file extension
+    return path || null;
+};
 
 const upload = (buffer, publicId) =>
     new Promise((resolve, reject) => {
@@ -23,40 +35,6 @@ const upload = (buffer, publicId) =>
         );
         streamifier.createReadStream(buffer).pipe(stream);
     });
-
-// const upload = (buffer, publicId) =>
-//   new Promise((resolve, reject) => {
-//     const stream = cloudinary.uploader.upload_stream(
-//       {
-//         public_id: publicId,
-//         resource_type: "image",
-//         format: "webp",
-//         overwrite: false,
-//         // Stored original (resized only)
-//         transformation: [
-//           { width: 1600, height: 1600, crop: "limit" },
-//           { quality: "auto" },
-//         ],
-//         // Processed version: background removed, white square background
-//         eager: [
-//           [
-//             { effect: "background_removal" },
-//             { width: 1200, height: 1200, crop: "pad", background: "white" },
-//             { quality: "auto", format: "jpg" },
-//           ],
-//         ],
-//         eager_async: false, // wait until the processed version is ready
-//       },
-//       (error, result) => {
-//         if (error) {
-//           logger.error({ err: error }, "Cloudinary upload error");
-//           return reject(error);
-//         }
-//         resolve(result);
-//       },
-//     );
-//     streamifier.createReadStream(buffer).pipe(stream);
-//   });
 
 // temp/ upload for categories, brands, products and SEO. The worker moves it later.
 export const uploadTempImage = (buffer, storeId, kind) =>
@@ -92,6 +70,22 @@ export const destroyImages = (publicIds) =>
       }),
     ),
   );
+export const deleteImageByUrl = async (storeLogo) => {
+  const publicId = extractPublicId(storeLogo);
+  if (!publicId) {
+    logger.warn({ storeLogo }, "deleteImageByUrl: could not extract public_id from URL, skipping delete");
+    return;
+  }
+  try {
+    const result = await cloudinary.uploader.destroy(publicId, {
+      invalidate: true,
+      resource_type: "image",
+    });
+    logger.info({ publicId, result: result.result }, "Cloudinary delete success");
+  } catch (error) {
+    logger.error({ err: error }, "Cloudinary delete error");
+  }
+}
 
 // Optional weekly safety net for uploads whose delayed expiry job was lost (for example Redis was down)
 export const cleanupTempImages = async (maxAgeHours = 24) => {

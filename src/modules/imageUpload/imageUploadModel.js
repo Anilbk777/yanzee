@@ -6,3 +6,9 @@ export const updateStoreLogoModel = (storeId, logo) =>
         data: { logo },
         select: { id: true, name: true, slug: true, logo: true },
     });
+
+export const getStoreLogoModel = (storeId) =>
+    prisma.store.findUnique({
+        where: { id: storeId },
+        select: { logo: true },
+    });

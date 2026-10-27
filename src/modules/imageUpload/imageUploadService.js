@@ -2,24 +2,30 @@ import { v2 as cloudinary } from "cloudinary";
 import AppError from "../../utils/AppError.js";
 import constants from "../../utils/constants.js";
 import logger from "../../utils/logger.js";
-import { updateStoreLogoModel } from "./imageUploadModel.js";
+import { updateStoreLogoModel, getStoreLogoModel } from "./imageUploadModel.js";
 import {
   validateRealFileType,
   uploadTempImage,
   uploadImage,
+  deleteImageByUrl
 } from "../../utils/imageUpload.js";
 
 
-const uploadStoreImageService = async (file, store) => {
-  logger.info({ storeId: store.id }, "store logo uploading")
+const uploadStoreImageService = async (file, storeId) => {
+  logger.info({ storeId }, "store logo uploading");
   if (!file) throw new AppError("No file provided", constants.BadRequest);
   await validateRealFileType(file.buffer);
 
-  const uploaded = await uploadImage(file.buffer, store.id, "logos");
+  // Fetch current logo and upload the new image concurrently
+  const [current, uploaded] = await Promise.all([
+    getStoreLogoModel(storeId),
+    uploadImage(file.buffer, storeId, "logos"),
+  ]);
+  const oldLogo = current?.logo ?? null;
 
   let updated;
   try {
-    updated = await updateStoreLogoModel(store.id, uploaded.secure_url);
+    updated = await updateStoreLogoModel(storeId, uploaded.secure_url);
   } catch (error) {
     // DB write failed, so don't leave an orphan in Cloudinary
     await cloudinary.uploader
@@ -28,10 +34,10 @@ const uploadStoreImageService = async (file, store) => {
     throw error;
   }
 
-  // DB succeeded, so remove the previous logo (best effort, never blocks the response)
-  if (store.logo) deleteImageByUrl(store.logo, store.id, "logos");
+  // DB succeeded — delete the old logo from Cloudinary (best-effort, never blocks response)
+  if (oldLogo) deleteImageByUrl(oldLogo);
 
-  logger.info({ storeId: store.id }, "Store logo updated");
+  logger.info({ storeId }, "Store logo updated");
 
   return {
     statusCode: 200,
