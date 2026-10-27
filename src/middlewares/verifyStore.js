@@ -1,19 +1,18 @@
 import AppError from "../utils/AppError.js";
 import constants from "../utils/constants.js";
-import { getStoreByIdModel } from "../modules/store/storeModel.js"
+import { getStoreByIdModel } from "../modules/store/storeModel.js";
+import { redisConnection } from "../config/redisConfig.js";
 
-const storeCache = new Map();
-const TTL_MS = 5 * 60 * 1000;
-
-// export const invalidateStoreCache = (userId, storeId) => storeCache.delete(`${userId}:${storeId}`);
+const redis = redisConnection;
+const TTL_SEC = 5 * 60 * 60;
 
 const getStoreCached = async (userId, storeId) => {
     const key = `${userId}:${storeId}`;
-    const hit = storeCache.get(key);
-    if (hit && hit.exp > Date.now()) return hit.store;
+    const hit = await redis.hgetall(key);
+    if (hit) return hit;
 
     const store = await getStoreByIdModel(userId, storeId);
-    if (store) storeCache.set(key, { store, exp: Date.now() + TTL_MS });
+    if (store) await redis.hset(key, store, { EX: TTL_SEC });
     return store;
 };
 

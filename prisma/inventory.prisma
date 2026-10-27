@@ -101,7 +101,7 @@ model StockBatch {
   @@unique([storeId, batchNumber])
   @@index([outletId, productId, variantId, expiryDate]) // picking the next box to sell from
   @@index([storeId, expiryDate]) // expiring / expired reports
-  @@index([movementId])
+  @@index([storeId, productId, variantId, createdAt])
   @@map("stock_batches")
 }
  
