@@ -1,7 +1,8 @@
 import logger from "../../utils/logger.js";
 import AppError from "../../utils/AppError.js";
 import constants from "../../utils/constants.js";
-import { getStockInRefsModel, createStockInModel, getMovementsModel ,getStockModel } from "./inventoryModel.js";
+import { getStockInRefsModel, createStockInModel, getMovementsModel ,getStockModel,getItemBatchesModel  } from "./inventoryModel.js";
+import { toCents, fromCents } from "../../utils/money.js"; 
 
 const MAX_TOTAL_PRICE = 99_999_999_999_999; // Decimal(14,2) limit for the movement total
 
@@ -172,6 +173,69 @@ export const getStockService = async (storeId, query) => {
         data: {
             items: data,
             pagination: { page: query.page, limit: query.limit, total, totalPages: Math.ceil(total / query.limit) },
+        },
+    };
+};
+
+
+export const getItemBatchesService = async (storeId, productId, query) => {
+    const rows = await getItemBatchesModel(storeId, productId, query);
+
+    if (rows.length === 0) throw new AppError("Product not found", constants.NotFound);
+    const head = rows[0];
+
+    if (query.variantId && !head.hasVariants) {
+        throw new AppError("This product has no variants", constants.BadRequest);
+    }
+    const units = rows.filter((r) => r.hasUnit);
+    if (query.variantId && units.length === 0) throw new AppError("Variant not found", constants.NotFound);
+
+    const variants = units.map((r) => ({
+        variantId: r.variantId, // null for a product without variants
+        variantName: r.variantName,
+        name: r.variantName ? `${r.productName} — ${r.variantName}` : r.productName,
+        summary: {
+            batchCount: r.batchCount,
+            totalReceived: r.received,
+            totalRemaining: r.remaining,
+            totalCost: r.cost, // received quantity x unit cost, summed
+        },
+        batches: r.batches.map((b) => ({
+            id: b.id,
+            batchNumber: b.batchNumber,
+            batchLabel: batchLabel(b.batchNumber),
+            outlet: { id: b.outletId, name: b.outletName },
+            unitCost: b.unitCost,
+            totalCost: b.totalCost,
+            stock: {
+                received: b.received,
+                remaining: b.remaining,
+                used: b.received - b.remaining, // sold, transferred, written off
+            },
+            expiryDate: b.expiryDate,
+            createdAt: b.createdAt,
+        })),
+        pagination: {
+            page: query.page,
+            limit: query.limit,
+            total: r.batchCount,
+            totalPages: Math.ceil(r.batchCount / query.limit),
+        },
+    }));
+
+    return {
+        statusCode: 200,
+        message: "Batches fetched successfully",
+        data: {
+            item: { productId: head.productId, productName: head.productName, hasVariants: head.hasVariants },
+            summary: {
+                variantCount: variants.length,
+                batchCount: variants.reduce((s, v) => s + v.summary.batchCount, 0),
+                totalReceived: variants.reduce((s, v) => s + v.summary.totalReceived, 0),
+                totalRemaining: variants.reduce((s, v) => s + v.summary.totalRemaining, 0),
+                totalCost: fromCents(variants.reduce((s, v) => s + toCents(v.summary.totalCost), 0)),
+            },
+            variants,
         },
     };
 };

@@ -1,4 +1,6 @@
 import prisma from "../../config/dbConfig.js";
+import { Prisma } from "../../../generated/prisma/index.js";
+
 
 const listSelect = {
     id: true,
@@ -33,32 +35,28 @@ export const createBrandModel = (storeId, data) =>
         },
     });
 
+const escapeLike = (s) => s.replace(/[\\%_]/g, "\\$&");
+
 export const getBrandsModel = async (storeId, { page, limit, search, isAvailable }) => {
-    const where = {
-        storeId,
-        ...(isAvailable !== undefined && { isAvailable }),
-        ...(search && {
-            OR: [
-                { name: { contains: search, mode: "insensitive" } },
-                { slug: { contains: search, mode: "insensitive" } }
-            ]
-        })
+    const like = search ? `%${escapeLike(search)}%` : null;
+    const searchSql = like ? Prisma.sql`AND (b.name ILIKE ${like} OR b.slug ILIKE ${like})` : Prisma.empty;
+    const availableSql = isAvailable === undefined ? Prisma.empty : Prisma.sql`AND b.is_available = ${isAvailable}`;
+
+    const rows = await prisma.$queryRaw(Prisma.sql`
+        SELECT b.id, b.name, b.slug, b.logo, b.is_available AS "isAvailable", b.created_at AS "createdAt",
+               (SELECT COUNT(*)::int FROM products p WHERE p.brand_id = b.id) AS "productCount",
+               COUNT(*) OVER()::int AS total
+        FROM brands b
+        WHERE b.store_id = ${storeId} ${availableSql} ${searchSql}
+        ORDER BY b.created_at DESC, b.id DESC
+        LIMIT ${limit} OFFSET ${(page - 1) * limit}
+    `);
+
+    return {
+        items: rows.map(({ total: _t, ...b }) => ({ ...b, _count: { products: b.productCount } })),
+        total: rows[0]?.total ?? 0,
     };
-
-    const [items, total] = await Promise.all([
-        prisma.brand.findMany({
-            where,
-            select: listSelect,
-            orderBy: [{ createdAt: "desc" }, { id: "desc" }],
-            skip: (page - 1) * limit,
-            take: limit,
-        }),
-        prisma.brand.count({ where }),
-    ]);
-
-    return { items, total };
 };
-
 export const getBrandByIdModel = (storeId, brandId) =>
     prisma.brand.findUnique({
         where: { id: brandId, storeId },

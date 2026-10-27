@@ -2,9 +2,9 @@ import { Router } from "express";
 import authenticateUser from "../../middlewares/authenticate.js";
 import verifyStore from "../../middlewares/verifyStore.js";
 import requireStoreRole from "../../middlewares/requireStoreRole.js";
-import { validateRequest, validateQuery } from "../../middlewares/requestValidate.js";
-import { StockInSchema, ListMovementsQuerySchema, ListStockQuerySchema } from "./inventoryValidation.js";
-import { stockInController, getMovementsController, getStockController } from "./inventoryController.js";
+import { validateRequest, validateQuery , validateParams } from "../../middlewares/requestValidate.js";
+import { StockInSchema, ListMovementsQuerySchema, ListStockQuerySchema ,ItemParamsSchema,ItemBatchesQuerySchema} from "./inventoryValidation.js";
+import { stockInController, getMovementsController, getStockController ,getItemBatchesController} from "./inventoryController.js";
 
 const inventoryRouter = Router();
 
@@ -16,12 +16,27 @@ inventoryRouter.post(
     validateRequest(StockInSchema),
     stockInController
 );
+
 inventoryRouter.get(
     "/movements",
-    requireStoreRole("OWNER", "MANAGER"), // values and costs are sensitive; add more roles if needed
+    requireStoreRole("OWNER", "MANAGER"),
     validateQuery(ListMovementsQuerySchema),
     getMovementsController
 );
-inventoryRouter.get("/stock", requireStoreRole("OWNER", "MANAGER"), validateQuery(ListStockQuerySchema), getStockController);
+inventoryRouter.get(
+    "/stock",
+    requireStoreRole("OWNER", "MANAGER"),
+    validateQuery(ListStockQuerySchema),
+    getStockController
+);
+
+inventoryRouter.get(
+    "/items/:productId/batches",
+    requireStoreRole("OWNER", "MANAGER"),
+    validateParams(ItemParamsSchema),
+    validateQuery(ItemBatchesQuerySchema),
+    getItemBatchesController
+);
+
 
 export default inventoryRouter;

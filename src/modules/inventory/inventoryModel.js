@@ -110,7 +110,7 @@ export const createStockInModel = async (
             SELECT gen_random_uuid()::text, ${storeId}, ${outletId},
                    a.product_id, a.variant_id, a.item_key, a.qty, now(), now()
             FROM agg a
-            ON CONFLICT (outlet_id, item_key) DO UPDATE
+            ON CONFLICT (store_id, outlet_id, item_key) DO UPDATE
             SET quantity = outlet_stocks.quantity + EXCLUDED.quantity,
                 last_stocked_at = now(),
                 updated_at = now()
@@ -269,4 +269,75 @@ export const getStockModel = async (storeId, { page, limit, search, outletId, st
 
   const [items, [{ total }]] = await Promise.all([pageQuery, countQuery]);
   return { items, total };
+};
+
+
+
+// One statement, one row per variant (or one row for a product without variants).
+// Each row carries that variant's totals and its page of batches as JSON.
+// page and limit apply PER VARIANT.
+export const getItemBatchesModel = async (storeId, productId, { page, limit, variantId, outletId, onlyAvailable }) => {
+    const variantSql = variantId ? Prisma.sql`AND v.id = ${variantId}` : Prisma.empty;
+    const outletSql = outletId ? Prisma.sql`AND b.outlet_id = ${outletId}` : Prisma.empty;
+    const availableSql = onlyAvailable ? Prisma.sql`AND b.remaining_quantity > 0` : Prisma.empty;
+
+    // the batches that belong to one unit (a variant, or the product itself)
+    const matchSql = Prisma.sql`
+        b.store_id = ${storeId} AND b.product_id = u.product_id
+        AND ((u.variant_id IS NULL AND b.variant_id IS NULL) OR b.variant_id = u.variant_id)
+        ${outletSql} ${availableSql}`;
+
+    return prisma.$queryRaw(Prisma.sql`
+        WITH
+        prod AS (
+            SELECT id, name, has_variants FROM products WHERE id = ${productId} AND store_id = ${storeId}
+        ),
+        units AS (
+            SELECT p.id AS product_id, NULL::text AS variant_id, NULL::text AS variant_name
+            FROM prod p WHERE NOT p.has_variants
+            UNION ALL
+            SELECT p.id, v.id, v.name
+            FROM prod p
+            JOIN product_variants v ON v.product_id = p.id AND v.store_id = ${storeId}
+            WHERE p.has_variants ${variantSql}
+        )
+        SELECT p.id AS "productId", p.name AS "productName", p.has_variants AS "hasVariants",
+               (u.product_id IS NOT NULL) AS "hasUnit",
+               u.variant_id AS "variantId", u.variant_name AS "variantName",
+               s.batch_count AS "batchCount", s.received, s.remaining, s.cost,
+               COALESCE(bt.batches, '[]'::json) AS batches
+        FROM prod p
+        LEFT JOIN units u ON TRUE
+        LEFT JOIN LATERAL (
+            SELECT COUNT(*)::int AS batch_count,
+                   COALESCE(SUM(b.quantity), 0)::int AS received,
+                   COALESCE(SUM(b.remaining_quantity), 0)::int AS remaining,
+                   COALESCE(SUM(b.quantity * b.unit_cost), 0)::text AS cost
+            FROM stock_batches b
+            WHERE ${matchSql}
+        ) s ON u.product_id IS NOT NULL
+        LEFT JOIN LATERAL (
+            SELECT json_agg(json_build_object(
+                       'id', x.id, 'batchNumber', x.batch_number,
+                       'outletId', x.outlet_id, 'outletName', x.outlet_name,
+                       'unitCost', x.unit_cost, 'totalCost', x.total_cost,
+                       'received', x.quantity, 'remaining', x.remaining_quantity,
+                       'expiryDate', x.expiry_date, 'createdAt', x.created_at
+                   ) ORDER BY x.sort_at DESC, x.id DESC) AS batches
+            FROM (
+                SELECT b.id, b.batch_number, b.outlet_id, o.name AS outlet_name,
+                       b.unit_cost::text AS unit_cost,
+                       (b.quantity * b.unit_cost)::text AS total_cost,
+                       b.quantity, b.remaining_quantity, b.expiry_date,
+                       b.created_at AS sort_at,
+                       to_char(b.created_at, 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS created_at
+                FROM stock_batches b
+                JOIN outlets o ON o.id = b.outlet_id
+                WHERE ${matchSql}
+                ORDER BY b.created_at DESC, b.id DESC
+                LIMIT ${limit} OFFSET ${(page - 1) * limit}
+            ) x
+        ) bt ON u.product_id IS NOT NULL
+        ORDER BY u.variant_name NULLS FIRST, u.variant_id
+    `);
 };

@@ -36,14 +36,12 @@ export const getStoresModel = async (userId) => {
     return memberships.map((m) => m.store);
 };
 
-// Returns null if the user isn't a member
-export const getStoreByIdModel = async (userId, storeId) => {
-    const membership = await prisma.storeMember.findUnique({
-        where: { storeId_userId: { storeId, userId } },
-        select: { store: { select: storeSelect } },
+export const getStoreByIdModel = async (userId, storeId) =>
+    prisma.store.findFirst({
+        where: { id: storeId, members: { some: { userId } } },
+        select: storeSelect,
     });
-    return membership?.store ?? null;
-};
+
 
 // P2025 = store not found or user isn't a member
 export const updateStoreDetailModel = (userId, storeId, data) =>

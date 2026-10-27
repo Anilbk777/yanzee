@@ -69,3 +69,16 @@ export const ListStockQuerySchema = z.object({
   outletId: z.uuid("Invalid outlet id").optional(), // limits quantities and the breakdown to one outlet
   status: z.enum(["IN_STOCK", "LOW_STOCK", "OUT_OF_STOCK"], "Invalid status").optional(),
 });
+
+
+export const ItemParamsSchema = z.object({
+    productId: z.uuid("Invalid product id"),
+});
+
+export const ItemBatchesQuerySchema = z.object({
+    page: z.coerce.number().int().min(1).default(1),
+    limit: z.coerce.number().int().min(1).max(100).default(20),
+    variantId: z.uuid("Invalid variant id").optional(),
+    outletId: z.uuid("Invalid outlet id").optional(),
+    onlyAvailable: z.enum(["true", "false"]).transform((v) => v === "true").default(false), // hide sold-out batches
+});
