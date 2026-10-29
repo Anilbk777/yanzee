@@ -10,6 +10,23 @@ const storeSelect = {
     category: true,
 };
 
+const storeDetailsSelect = {
+    id: true,
+    name: true,
+    slug: true,
+    status: true,
+    isPublished: true,
+    category: true,
+    logo: true,
+    seoImage: true,
+    storeAddress: true,
+    contactPhone: true,
+    contactEmail: true,
+    createdAt: true,
+    updatedAt: true,
+}
+
+
 // Creates the store and the owner's membership in one atomic query
 export const createStoreModel = (userId, data) =>
     prisma.store.create({
@@ -69,3 +86,11 @@ export const deleteStoreModel = (userId, storeId) =>
         where: { id: storeId, members: { some: { userId } } },
         select: { id: true, name: true, logo: true, seoImage: true },
     });
+
+export const getStoreInfoModel = async (userId, storeId) => {
+    const membership = await prisma.storeMember.findUnique({
+        where: { storeId_userId: { storeId, userId } },
+        select: { store: { select: storeDetailsSelect } },
+    });
+    return membership?.store ?? null;
+};

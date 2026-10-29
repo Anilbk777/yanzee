@@ -72,7 +72,7 @@ export const getOrderRefsModel = async (storeId, customerId, productIds, variant
     };
 };
 
-// ==================================== CREATE ORDER HELPERS ====================================
+// ==================================== CREATE ORDER Model HELPERS ====================================
 
 // 1. Order number: increments the store's counter and locks the store row until commit
 const allocateNextOrderNumber = async (tx, storeId) => {

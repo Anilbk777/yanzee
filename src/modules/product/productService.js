@@ -36,7 +36,7 @@ const toNumber = (v) => (v == null ? null : Number(v));
 
 // Variant products keep price and stock on the variants, so the product's own values are null
 const BASE_RESET = {
-    sellingPrice: null, quantity: null,
+    sellingPrice: null,
     crossedPrice: null, costPrice: null, weight: null, sku: null, hsCode: null, altBarcode: null,
 };
 
@@ -50,7 +50,6 @@ const toVariantOp = ({ id, ...v }) => ({
         sellingPrice: v.sellingPrice,
         crossedPrice: v.crossedPrice ?? null,
         costPrice: v.costPrice ?? null,
-        quantity: v.quantity ?? 0,
         weight: v.weight ?? null,
         sku: v.sku ?? null,
         hsCode: v.hsCode ?? null,
@@ -265,7 +264,6 @@ export const updateInventoryService = async (storeId, productId, payload) => {
             sellingPrice: base.sellingPrice,
             crossedPrice: base.crossedPrice ?? null,
             costPrice: base.costPrice ?? null,
-            quantity: base.quantity ?? 0,
             weight: base.weight ?? null,
             sku: base.sku ?? null,
             hsCode: base.hsCode ?? null,

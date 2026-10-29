@@ -7,13 +7,15 @@ import {
     getStoresModel,
     getStoreByIdModel,
     updateStoreDetailModel,
-    deleteStoreModel
+    deleteStoreModel,
+    getStoreInfoModel
 } from "./storeModel.js";
 
 import {
     publicIdOf,
     dispatchDeletes
 } from "../../utils/imageUpload.js";
+import { invalidateStore } from "../../utils/storeCache.js";
 
 
 const SLUG_MAX_BASE_LENGTH = 40;
@@ -91,7 +93,7 @@ const getStoresService = async (userId) => {
 
 const getStoreByIdService = async (userId, storeId) => {
     logger.info({ userId, storeId }, "getting store info by id");
-    const store = await getStoreByIdModel(userId, storeId);
+    const store = await getStoreInfoModel(userId, storeId);
     logger.info({ storeId, userId }, "Store info fetched successfully");
 
     return {
@@ -104,6 +106,8 @@ const getStoreByIdService = async (userId, storeId) => {
 const updateStoreDetailService = async (userId, storeId, payload) => {
     logger.info({ userId, storeId }, "updating store details");
     const updatedStore = await updateStoreDetailModel(userId, storeId, payload);
+    await invalidateStore(storeId);
+
     logger.info({ userId, storeId }, "Store details updated successfully");
     return {
         statusCode: 200,
@@ -117,6 +121,8 @@ const deleteStoreService = async (userId, storeId) => {
     logger.info({ userId, storeId }, "deleting store");
 
     const deletedStore = await deleteStoreModel(userId, storeId);
+    await invalidateStore(store.id);
+
     dispatchDeletes([
         publicIdOf(deletedStore.logo, storeId, "logos"),
         publicIdOf(deletedStore.seoImage, storeId, "store-seo"),
@@ -133,6 +139,7 @@ const deleteStoreService = async (userId, storeId) => {
 const togglePublishService = async (userId, store) => {
     logger.info({ userId, storeId: store.id }, "Toggling store publish");
     const updatedStore = await updateStoreDetailModel(userId, store.id, { isPublished: !store.isPublished });
+    await invalidateStore(store.id);
     logger.info({ userId, storeId: store.id, isPublished: updatedStore.isPublished }, "Store toggled successfully");
     return {
         statusCode: 200,
