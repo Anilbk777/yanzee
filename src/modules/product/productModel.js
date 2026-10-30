@@ -3,7 +3,6 @@ import { Prisma } from "../../../generated/prisma/index.js";
 import AppError from "../../utils/AppError.js";
 import constants from "../../utils/constants.js";
 import { createInitialInventory, removeStock } from "../inventory/inventoryHelper.js";
-
 const connectIds = (ids) => ids.map((id) => ({ id }));
 
 // ---------- selects ----------
@@ -178,7 +177,7 @@ export const updateInventoryModel = async (userId, storeId, productId, { variant
     return prisma.$transaction(async (tx) => {
         // case 3: base -> variants
         if (writeOffBase) {
-            await removeStock(tx, { storeId, productId, variantIds: null, userId, note: "Product converted to variants" });
+            await removeStock(tx, { storeId, productId, variantIds: null, userId, note: "Product converted to variants"});
         }
 
         if (variants) {
@@ -204,7 +203,7 @@ export const updateInventoryModel = async (userId, storeId, productId, { variant
                     );
                 }
 
-                await removeStock(tx, { storeId, productId, variantIds: removedIds, userId, note: "Variant removed from product" });
+                await removeStock(tx, { storeId, productId, variantIds: removedIds, userId, note: "Variant removed from product"});
             }
 
             // changed variants
@@ -218,7 +217,7 @@ export const updateInventoryModel = async (userId, storeId, productId, { variant
         }
 
         return tx.product.update({ where: { id: productId, storeId }, data, select: { id: true, name: true } });
-    }, { timeout: 15000 });
+    }, { timeout: 30000 });
 };
 
 

@@ -129,7 +129,7 @@ export const createInitialInventory = async (tx, { userId = null, storeId, outle
 
 // Writes off all remaining units, deletes the live stock rows, then deletes the variants.
 // variantIds = null means the base product.
-export const removeStock = async (tx, { storeId, productId, variantIds, userId, note }) => {
+export const removeStock = async (tx, { storeId, productId, variantIds,all = false,  userId, note,}) => {
     const variantFilter = all
         ? {}                                         // base product + every variant
         : variantIds
