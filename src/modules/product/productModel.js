@@ -1,7 +1,9 @@
 import prisma from "../../config/dbConfig.js";
-import { Prisma } from "../../../generated/prisma/index.js"; 
+import { Prisma } from "../../../generated/prisma/index.js";
 import AppError from "../../utils/AppError.js";
 import constants from "../../utils/constants.js";
+import { createInitialInventory, removeStock } from "../inventory/inventoryHelper.js";
+
 const connectIds = (ids) => ids.map((id) => ({ id }));
 
 // ---------- selects ----------
@@ -9,6 +11,7 @@ const variantSelect = {
     id: true, name: true, size: true, colorCodes: true,
     crossedPrice: true, sellingPrice: true, costPrice: true,
     quantity: true, weight: true, sku: true, hsCode: true, altBarcode: true,
+    isAvailable:true, imageUrls:true,
     createdAt: true, updatedAt: true,
 };
 
@@ -64,155 +67,28 @@ export const findTakenSkusModel = async (storeId, skus, { productId } = {}) => {
     return [...new Set([...products, ...variants].map((r) => r.sku))];
 };
 
-/**
- * Atomically allocates `count` consecutive batch numbers in a single DB round-trip.
- * Returns the first number in the allocated range so callers can use
- * firstBatch, firstBatch+1, firstBatch+2, … without any further DB calls.
- */
-const allocateBatchNumbers = async (tx, storeId, count) => {
-    const updated = await tx.store.update({
-        where: { id: storeId },
-        data: { nextBatchNumber: { increment: count } },
-        select: { nextBatchNumber: true },
-    });
-    // nextBatchNumber is now the value AFTER the increment, so the first
-    // allocated number is (updatedValue - count).
-    return updated.nextBatchNumber - count;
-};
-
-const createInitialInventory = async (
-    tx,
-    {
-        storeId,
-        outlet,
-        product,
-        variants = [],
-    }
-) => {
-    const lines = [];
-
-    if (!product.hasVariants && product.quantity > 0) {
-        lines.push({
-            productId: product.id,
-            variantId: null,
-            quantity: product.quantity,
-            unitCost: product.costPrice ?? 0,
-        });
-    }
-
-    if (product.hasVariants) {
-        for (const variant of variants) {
-            if (variant.quantity <= 0) continue;
-            lines.push({
-                productId: product.id,
-                variantId: variant.id,
-                quantity: variant.quantity,
-                unitCost: variant.costPrice ?? 0,
-            });
-        }
-    }
-
-    if (lines.length === 0) return;
-
-    const totalQuantity = lines.reduce((total, line) => total + line.quantity, 0);
-    const totalCost = lines.reduce(
-        (total, line) => total + line.quantity * Number(line.unitCost),
-        0
-    );
-
-    // 1 query: create movement header
-    const movement = await tx.stockMovement.create({
-        data: {
-            storeId,
-            outletId: outlet.id,
-            type: "STOCK_IN",
-            note: "Initial stock when product was created",
-            totalQuantity,
-            totalCost,
-            totalProducts: lines.length,
-        },
-    });
-
-    // 1 query: allocate ALL batch numbers at once (was 2 queries × N lines)
-    const firstBatchNumber = await allocateBatchNumbers(tx, storeId, lines.length);
-
-    // Process each line: stockBatch must be created first (batch.id is needed),
-    // then stockMovementItem + outletStock can run in parallel.
-    for (let i = 0; i < lines.length; i++) {
-        const line = lines[i];
-        const batchNumber = firstBatchNumber + i;
-
-        const batch = await tx.stockBatch.create({
-            data: {
-                storeId,
-                batchNumber,
-                movementId: movement.id,
-                productId: line.productId,
-                variantId: line.variantId,
-                outletId: outlet.id,
-                unitCost: line.unitCost,
-                quantity: line.quantity,
-                remainingQuantity: line.quantity,
-            },
-        });
-
-        // stockMovementItem and outletStock are independent — run in parallel
-        await Promise.all([
-            tx.stockMovementItem.create({
-                data: {
-                    movementId: movement.id,
-                    storeId,
-                    outletId: outlet.id,
-                    type: "STOCK_IN",
-                    batchId: batch.id,
-                    productId: line.productId,
-                    variantId: line.variantId,
-                    quantity: line.quantity,
-                    unitCost: line.unitCost,
-                },
-            }),
-            tx.outletStock.create({
-                data: {
-                    storeId,
-                    outletId: outlet.id,
-                    productId: line.productId,
-                    variantId: line.variantId,
-                    itemKey: line.variantId ?? line.productId,
-                    quantity: line.quantity,
-                    expiredQuantity: 0,
-                    lastStockedAt: new Date(),
-                },
-            }),
-        ]);
-    }
-};
-
 // ---------- create ----------
 // P2002 = slug or sku already taken
 export const createProductModel = async (
+    userId,
     storeId,
-    {
-        categoryIds,
-        similarProductIds,
-        variants,
-        brandId,   // extract so we don't spread it as a raw scalar (Prisma checked-input mode requires relation connect)
-        ...data
-    }
+    { outletId, categoryIds, similarProductIds, variants, brandId, ...data }
 ) => {
     return prisma.$transaction(async (tx) => {
-        const mainOutlet = await tx.outlet.findFirst({
-            where: {
-                storeId,
-                isMain: true,
-                isActive: true,
-            },
+        // The outlet the user chose, or the main outlet when none was sent
+        const outlet = await tx.outlet.findFirst({
+            where: outletId
+                ? { id: outletId, storeId }
+                : { storeId, isMain: true, isActive: true },
         });
 
-        if (!mainOutlet) {
-            throw new AppError(
-                "Main outlet not found for this store",
-                constants.BadRequest
-            );
+        if (!outlet) {
+            throw outletId
+                ? new AppError("Outlet not found", constants.NotFound)
+                : new AppError("Main outlet not found for this store", constants.BadRequest);
+        }
+        if (!outlet.isActive) {
+            throw new AppError("This outlet is turned off. Turn it on before adding stock", constants.Conflict);
         }
 
         const hasVariants = variants.length > 0;
@@ -220,57 +96,27 @@ export const createProductModel = async (
         const product = await tx.product.create({
             data: {
                 ...data,
-                store: { connect: { id: storeId } },          // connect store relation
-
-                ...(brandId && {
-                    brand: { connect: { id: brandId } },       // Fix 3: connect brand relation (raw brandId rejected in checked-input mode)
-                }),
-
+                store: { connect: { id: storeId } },
+                ...(brandId && { brand: { connect: { id: brandId } } }),
                 hasVariants,
-
-                // quantity is a non-nullable Int (default 0) — never pass null.
-                // For variant products, omit it so Prisma uses the default (0).
-                // For simple products, fall back to 0 if not provided.
                 ...(!hasVariants && { quantity: data.quantity ?? 0 }),
-
-                categories: {
-                    connect: connectIds(categoryIds),
-                },
-
+                categories: { connect: connectIds(categoryIds) },
                 ...(similarProductIds.length > 0 && {
-                    similarProducts: {
-                        connect: connectIds(similarProductIds),
-                    },
+                    similarProducts: { connect: connectIds(similarProductIds) },
                 }),
-
-                ...(hasVariants && {
-                    variants: {
-                        // storeId is part of the composite FK (productId, storeId) and is
-                        // auto-filled by Prisma from the parent product — do NOT pass it manually.
-                        create: variants,
-                    },
-                }),
+                ...(hasVariants && { variants: { create: variants } }), // imageUrls + isAvailable pass through as scalars
             },
-
-            include: {
-                variants: true,
-            },
+            include: { variants: true },
         });
 
         await createInitialInventory(tx, {
-            storeId,
-            outlet: mainOutlet,
-            product,
-            variants: product.variants,
+            userId, storeId, outlet, product, variants: product.variants,
         });
 
-        return {
-            id: product.id,
-            name: product.name,
-            slug: product.slug,
-        };
-    }, { timeout: 15000 }); // 15s — inventory creation involves N batches of parallel writes
+        return { id: product.id, name: product.name, slug: product.slug };
+    }, { timeout: 15000 });
 };
+
 // ---------- read ----------
 export const getProductsModel = async (storeId, { page, limit, search, status, channel, audience, brandId, categoryId, isAvailable }) => {
     const where = {
@@ -326,40 +172,93 @@ export const updateProductModel = (storeId, productId, { categoryIds, similarPro
         },
     });
 
-// `variants` is undefined (leave alone) or [{ id?, data }] (the full desired list).
-// Everything runs as ONE batched transaction (a single round trip, no interactive-transaction timeout).
-// P2002 = sku taken, P2003 = a variant being deleted is used in orders
-export const updateInventoryModel = async (storeId, productId, { variants, ...data }) => {
-    const ops = [];
+const OPEN_ORDER = ["PENDING", "PROCESSING", "DISPATCHED"];
 
-    if (variants) {
-        const keepIds = variants.filter((v) => v.id).map((v) => v.id);
-        const toCreate = variants.filter((v) => !v.id).map((v) => ({ ...v.data, productId, storeId }));
-
-        // notIn: [] matches every variant, which is what "variants: []" needs
-        ops.push(prisma.productVariant.deleteMany({ where: { productId, storeId, id: { notIn: keepIds } } }));
-
-        for (const { id, data: variantData } of variants) {
-            if (id) ops.push(prisma.productVariant.update({ where: { id, productId, storeId }, data: variantData }));
+export const updateInventoryModel = async (userId, storeId, productId, { variants, writeOffBase, ...data }) => {
+    return prisma.$transaction(async (tx) => {
+        // case 3: base -> variants
+        if (writeOffBase) {
+            await removeStock(tx, { storeId, productId, variantIds: null, userId, note: "Product converted to variants" });
         }
-        if (toCreate.length > 0) ops.push(prisma.productVariant.createMany({ data: toCreate }));
-    }
 
-    // Last, so the returned product already reflects the variant changes
-    ops.push(prisma.product.update({ where: { id: productId, storeId }, data, select: { id: true, name: true } }));
+        if (variants) {
+            const keepIds = variants.filter((v) => v.id).map((v) => v.id);
 
-    const results = await prisma.$transaction(ops);
-    return results.at(-1);
+            // cases 2 and 4: variants missing from the list are removed
+            const removed = await tx.productVariant.findMany({
+                where: { productId, storeId, id: { notIn: keepIds } }, // notIn: [] matches all
+                select: { id: true, name: true },
+            });
+
+            if (removed.length > 0) {
+                const removedIds = removed.map((v) => v.id);
+
+                const open = await tx.orderItem.findFirst({
+                    where: { variantId: { in: removedIds }, order: { status: { in: OPEN_ORDER } } },
+                    select: { variantName: true, order: { select: { orderNumber: true } } },
+                });
+                if (open) {
+                    throw new AppError(
+                        `"${open.variantName}" is in open order #${open.order.orderNumber}. Finish or cancel it before removing the variant`,
+                        constants.Conflict
+                    );
+                }
+
+                await removeStock(tx, { storeId, productId, variantIds: removedIds, userId, note: "Variant removed from product" });
+            }
+
+            // changed variants
+            for (const { id, data: variantData } of variants) {
+                if (id) await tx.productVariant.update({ where: { id, productId, storeId }, data: variantData });
+            }
+
+            // new variants: quantity 0, no batch. Stock comes from stock-in.
+            const toCreate = variants.filter((v) => !v.id).map((v) => ({ ...v.data, productId, storeId }));
+            if (toCreate.length > 0) await tx.productVariant.createMany({ data: toCreate });
+        }
+
+        return tx.product.update({ where: { id: productId, storeId }, data, select: { id: true, name: true } });
+    }, { timeout: 15000 });
 };
 
-// ---------- delete ----------
-// P2025 = not found, P2003 = referenced by order items (depends on the OrderItem onDelete rule)
-export const deleteProductModel = (storeId, productId) =>
-    prisma.product.delete({
-        where: { id: productId, storeId },
-        select: { id: true, name: true, imageUrls: true, seoImage: true },
-    });
 
+// P2025 / not found is thrown as an AppError below
+export const deleteProductModel = (userId, storeId, productId) =>
+    prisma.$transaction(async (tx) => {
+        // Read first: after the delete, the variants and their images are gone
+        const product = await tx.product.findFirst({
+            where: { id: productId, storeId },
+            select: {
+                id: true, name: true, imageUrls: true, seoImage: true,
+                variants: { select: { imageUrls: true } },
+            },
+        });
+        if (!product) throw new AppError("Product not found", constants.NotFound);
+
+        // Orders still being fulfilled need the product
+        const open = await tx.orderItem.findFirst({
+            where: { productId, order: { status: { in: OPEN_ORDER } } },
+            select: { order: { select: { orderNumber: true } } },
+        });
+        if (open) {
+            throw new AppError(
+                `This product is in open order #${open.order.orderNumber}. Finish or cancel it before deleting the product`,
+                constants.Conflict
+            );
+        }
+
+        await removeStock(tx, { storeId, productId, all: true, userId, note: "Product deleted" });
+
+        // Cascades: variants and any remaining outlet_stocks rows
+        await tx.product.delete({ where: { id: productId, storeId } });
+
+        return {
+            id: product.id,
+            name: product.name,
+            imageUrls: [...product.imageUrls, ...product.variants.flatMap((v) => v.imageUrls ?? [])],
+            seoImage: product.seoImage,
+        };
+    }, { timeout: 15000 });
 
 export const validateRefsAndSkusModel = async (storeId, { categoryIds = [], brandId = null, similarProductIds = [], skus = [], productId = null }) => {
     const [row] = await prisma.$queryRaw`

@@ -1,7 +1,7 @@
 import logger from "../../utils/logger.js";
 import AppError from "../../utils/AppError.js";
 import constants from "../../utils/constants.js";
-import { getStockInRefsModel, createStockInModel, getMovementsModel ,getStockModel,getItemBatchesModel  } from "./inventoryModel.js";
+import { getStockInRefsModel, createStockInModel, getMovementsModel ,getStockModel,getItemBatchesModel ,getInventoryOverviewModel  } from "./inventoryModel.js";
 import { toCents, fromCents } from "../../utils/money.js"; 
 
 const MAX_TOTAL_PRICE = 99_999_999_999_999; // Decimal(14,2) limit for the movement total
@@ -76,14 +76,19 @@ export const stockInService = async (storeId, userId, payload) => {
             totalQuantity, totalCost, totalProducts, lines,
         });
     } catch (error) {
-        const fkViolation = error?.code === "P2003" || (error?.code === "P2010" && error?.meta?.code === "23503");
-        if (fkViolation || error?.code === "P2025") {
+        // $queryRaw wraps the database error: the Postgres code is in error.meta.code
+        const code = error?.code === "P2010" ? error?.meta?.code : error?.code;
+        const changed =
+            code === "23503" || code === "P2003" || // outlet_stocks FK: product, variant or outlet deleted
+            code === "23502" ||                     // no name to snapshot: product or variant deleted
+            code === "P2025";                       // store not found
+        if (changed) {
             throw new AppError("A product, variant or outlet changed while saving. Please retry", constants.Conflict);
         }
         throw error;
     }
 
-    const { movement, batches } = result;
+    const { movement } = result;
     logger.info({ storeId, movementId: movement.id, userId }, "Stock in completed");
 
     return {
@@ -96,22 +101,10 @@ export const stockInService = async (storeId, userId, payload) => {
                 outletId, referenceNumber, supplierName, note,
                 totalProducts, totalQuantity, totalCost,
                 createdAt: movement.createdAt,
-                batches: batches.map((b) => ({
-                    id: b.id,
-                    batchNumber: b.batchNumber,
-                    batchLabel: batchLabel(b.batchNumber),
-                    productId: b.productId,
-                    variantId: b.variantId,
-                    quantity: b.quantity,
-                    unitCost: b.unitCost,
-                    expiryDate: b.expiryDate,
-                })),
             },
         },
     };
 };
-
-
 
 export const getMovementsService = async (storeId, query) => {
     const { items, total } = await getMovementsModel(storeId, query);
@@ -236,6 +229,66 @@ export const getItemBatchesService = async (storeId, productId, query) => {
                 totalCost: fromCents(variants.reduce((s, v) => s + toCents(v.summary.totalCost), 0)),
             },
             variants,
+        },
+    };
+};
+
+
+
+
+const withName = (i) => ({ ...i, name: i.variantName ? `${i.productName} — ${i.variantName}` : i.productName });
+
+export const getInventoryOverviewService = async (storeId, query) => {
+    const r = await getInventoryOverviewModel(storeId, query);
+    if (query.outletId && !r.outlet) throw new AppError("Outlet not found", constants.NotFound);
+
+    const t = r.totals;
+
+    return {
+        statusCode: 200,
+        message: "Inventory overview fetched successfully",
+        data: {
+            scope: r.outlet ?? { id: null, name: "All active outlets" },
+
+            // section 1
+            inventoryValue: {
+                sellingValue: t.sellingValue,
+                costValue: t.costValue,
+                potentialProfit: fromCents(toCents(t.sellingValue) - toCents(t.costValue)),
+                totalProducts: t.products, // products without variants + every variant
+                totalQuantity: t.quantity,
+            },
+
+            // section 2
+            health: {
+                inStock: t.inStock,
+                lowStock: t.lowStock,
+                outOfStock: t.outOfStock,
+                lowStockThreshold: query.lowStockThreshold,
+            },
+
+            // section 3
+            movement: {
+                fastMoving: {
+                    days: query.fastMovingDays,
+                    movingItems: r.fastSummary.movingItems,
+                    unitsSold: r.fastSummary.unitsSold,
+                    items: r.fastMoving.map(withName),
+                },
+                expiringSoon: {
+                    days: query.expiringDays,
+                    items: t.expiringItems,
+                    units: t.expiringUnits,
+                    costValue: t.expiringCost,
+                    list: r.expiringSoon.map(withName),
+                },
+                expired: {
+                    items: t.expiredItems,
+                    units: t.expiredUnits,
+                    costValue: t.expiredCost,
+                    list: r.expired.map(withName),
+                },
+            },
         },
     };
 };

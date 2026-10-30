@@ -10,7 +10,10 @@ const slug = z
     .max(100, "Slug cannot exceed 100 characters")
     .regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/, "Slug can only contain lowercase letters, numbers and single hyphens");
 
-const image = z.url("Invalid image URL");
+const image = z.url({
+    error: (issue) =>
+        issue.input === undefined ? "Image is required" : "Invalid image URL",
+});
 
 // "" becomes null; null/undefined are allowed, so clients can clear a field
 const optionalText = (max, message) =>

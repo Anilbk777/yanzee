@@ -33,9 +33,9 @@ import {
     updateOrderSummaryModel,
     updateOrderCustomerModel,
     getOrderForStatusModel,
-    updateOrderStatusModel
+    updateOrderStatusModel,
+    getLiveRestoresModel 
 } from "./orderEditModel.js";
-import { success } from "zod";
 
 // ---------- loading ----------
 // The order, the active outlets and (only when items are edited) the stock history: all at once
@@ -169,8 +169,15 @@ export const updateOrderStatusService = async (storeId, actor, orderId, payload)
         throw new AppError(`This order is already ${STATUS_LABEL[order.status].toLowerCase()}`, constants.Conflict);
     }
     assertTransition(order.status, payload.status);
+    const allRestores = toRestorePicks(netPicks);
 
-    const restores = toRestorePicks(netPicks);
+    // Units of deleted products or variants have nowhere to go back to, so they are skipped
+    const restores = await getLiveRestoresModel(storeId, allRestores);
+
+    const sumQty = (list) => list.reduce((s, r) => s + r.quantity, 0);
+    const restoredUnits = sumQty(restores);
+    const skippedUnits = sumQty(allRestores) - restoredUnits;
+
     const money = planPayment(order, payload);
 
     try {
@@ -182,7 +189,7 @@ export const updateOrderStatusService = async (storeId, actor, orderId, payload)
             payments: money ? [{ ...money.payment, receivedById: actor.id }] : [],
             restores,
             stockNote: `Order ${payload.status.toLowerCase()}${payload.reason ? `: ${payload.reason}` : ""}`,
-            activities: buildActivities({ actor, order, payload, restores, money }),
+            activities: buildActivities({ actor, order, payload, restores, skippedUnits, money }),
         });
     } catch (error) {
         throw mapEditError(error);
@@ -192,10 +199,14 @@ export const updateOrderStatusService = async (storeId, actor, orderId, payload)
     return {
         success: true,
         statusCode: 200,
-        message: `Order marked as ${STATUS_LABEL[payload.status].toLowerCase()}`,
+        message: skippedUnits > 0
+            ? `Order marked as ${STATUS_LABEL[payload.status].toLowerCase()}. ${skippedUnits} unit${skippedUnits === 1 ? "" : "s"} could not be put back in stock because the product was deleted`
+            : `Order marked as ${STATUS_LABEL[payload.status].toLowerCase()}`,
         data: {
             id: order.id,
             orderNumber: order.orderNumber,
+            stockRestored: restoredUnits,
+            stockSkipped: skippedUnits,
         },
     };
 };

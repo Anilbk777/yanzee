@@ -147,7 +147,7 @@ model Order {
   @@index([storeId, channel, createdAt]) // separate lists: website / POS / admin
   @@index([storeId, customerPhone]) // repeat customers + "track my order"
   @@index([storeId, createdAt])
- @@index([storeId, customerName])
+  @@index([storeId, customerName])
   @@index([outletId])
   @@map("orders")
 }
@@ -160,16 +160,15 @@ model OrderItem {
   orderId String @map("order_id")
   order   Order  @relation(fields: [orderId], references: [id], onDelete: Cascade)
 
-  productId String          @map("product_id")
-  product   Product         @relation(fields: [productId], references: [id], onDelete: Restrict)
-  variantId String?         @map("variant_id")
-  variant   ProductVariant? @relation(fields: [variantId], references: [id], onDelete: SetNull)
+  productId String  @map("product_id")
+  variantId String? @map("variant_id")
 
   // Snapshot of what was sold: stays right even if the product is renamed or removed
   productName String  @map("product_name")
   variantName String? @map("variant_name")
   sku         String?
   image       String?
+  meta        Json    @default("{}")
 
   unitPrice Decimal @map("unit_price") @db.Decimal(12, 2) // price for ONE unit at the time of the sale
   quantity  Int
@@ -189,9 +188,9 @@ model OrderItem {
   outlet    Outlet  @relation(fields: [outletId], references: [id], onDelete: Restrict)
 
   review Review?
-
   @@index([orderId])
   @@index([outletId])
+  @@index([productId])
   @@map("order_items")
 }
 

@@ -56,51 +56,46 @@ model StockBatch {
   id      String @id @default(uuid())
   storeId String @map("store_id")
   store   Store  @relation(fields: [storeId], references: [id], onDelete: Cascade)
- 
-  // System batch number: 1, 2, 3 ... per store (shown as B-000123). Comes from Store.nextBatchNumber,
-  // which is increased inside the same save, so two people can never get the same number.
+
   batchNumber Int     @map("batch_number")
-  supplierLot String? @map("supplier_lot") // the lot code printed on the supplier's pack (needed for recalls)
- 
-  // The diary page that CREATED this batch: a STOCK_IN, a TRANSFER_IN, or an ADJUSTMENT that
-  // found units that belong to no known delivery.
-  // One diary page can create many batches (one per product line).
+  supplierLot String? @map("supplier_lot")
+
   movementId String        @map("movement_id")
   movement   StockMovement @relation(fields: [movementId], references: [id], onDelete: Restrict)
- 
-  // A batch created by a transfer points to the batch it came from
+
   sourceBatchId String?      @map("source_batch_id")
   sourceBatch   StockBatch?  @relation("BatchLineage", fields: [sourceBatchId], references: [id], onDelete: Restrict)
   childBatches  StockBatch[] @relation("BatchLineage")
- 
-  productId String          @map("product_id")
-  product   Product         @relation(fields: [productId, storeId], references: [id, storeId], onDelete: Restrict)
-  variantId String?         @map("variant_id")
-  variant   ProductVariant? @relation(fields: [variantId], references: [id], onDelete: Restrict)
- 
+
+  // Plain columns, NO foreign key: the product or variant can be deleted and these stay.
+  productId String  @map("product_id")
+  variantId String? @map("variant_id") // null = base product (or a deleted variant, see variantName)
+
+  // Snapshot, written ONCE when the batch is created. Never updated.
+  productName String  @map("product_name")
+  variantName String? @map("variant_name") // not null + variant gone = deleted variant
+  sku         String?
+  meta        Json    @default("{}") // display only: brand, categories, size, colorCodes, image, price
+
   outletId String @map("outlet_id")
   outlet   Outlet @relation(fields: [outletId], references: [id], onDelete: Restrict)
- 
-  unitCost          Decimal @map("unit_cost") @db.Decimal(12, 2) // cost per unit, fixed forever
-  // Units ever ADDED to this box: the delivery, plus any upward ADJUSTMENT on it.
-  // A downward adjustment, a sale or a write-off lowers remainingQuantity but NOT this number.
+
+  unitCost          Decimal @map("unit_cost") @db.Decimal(12, 2)
   quantity          Int
-  remainingQuantity Int @map("remaining_quantity") // units still in this box
- 
+  remainingQuantity Int     @map("remaining_quantity")
+
   manufactureDate DateTime? @map("manufacture_date") @db.Date
-  expiryDate      DateTime? @map("expiry_date") @db.Date // null = never expires
-  // Set by the nightly job once the expiry date has passed: the remaining units were then
-  // moved from OutletStock.quantity to OutletStock.expiredQuantity.
-  expiredAt DateTime? @map("expired_at")
- 
+  expiryDate      DateTime? @map("expiry_date") @db.Date
+  expiredAt       DateTime? @map("expired_at")
+
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
- 
+
   items StockMovementItem[]
- 
+
   @@unique([storeId, batchNumber])
-  @@index([outletId, productId, variantId, expiryDate]) // picking the next box to sell from
-  @@index([storeId, expiryDate]) // expiring / expired reports
+  @@index([outletId, productId, variantId, expiryDate])
+  @@index([storeId, expiryDate])
   @@index([storeId, productId, variantId, createdAt])
   @@map("stock_batches")
 }
@@ -166,31 +161,29 @@ model StockMovementItem {
   id         String        @id @default(uuid())
   movementId String        @map("movement_id")
   movement   StockMovement @relation(fields: [movementId], references: [id], onDelete: Restrict)
- 
-  // Copies of the page's values, written once at the same time. They make the reports fast
-  // (no join needed). The rows are never edited, so the copies can never go out of date.
-  storeId  String       @map("store_id")
-  outletId String       @map("outlet_id")
-  type     MovementType
-  createdAt DateTime    @default(now()) @map("created_at")
- 
+
+  storeId   String       @map("store_id")
+  outletId  String       @map("outlet_id")
+  type      MovementType
+  createdAt DateTime     @default(now()) @map("created_at")
+
   batchId String     @map("batch_id")
   batch   StockBatch @relation(fields: [batchId], references: [id], onDelete: Restrict)
- 
-  productId String          @map("product_id")
-  product   Product         @relation(fields: [productId, storeId], references: [id, storeId], onDelete: Restrict)
-  variantId String?         @map("variant_id")
-  variant   ProductVariant? @relation(fields: [variantId], references: [id], onDelete: Restrict)
- 
-  // Always positive, EXCEPT for an ADJUSTMENT line: there +5 adds units, -5 removes units
-  // (one stock-count can fix some items up and others down in one page).
+
+  // Plain columns, NO foreign key
+  productId String  @map("product_id")
+  variantId String? @map("variant_id")
+
+  // Copied from the batch, so reports need no join (full details are in batch.meta)
+  productName String  @map("product_name")
+  variantName String? @map("variant_name")
+  sku         String?
+
   quantity Int
-  unitCost Decimal @map("unit_cost") @db.Decimal(12, 2) // cost of these units, so profit = sale price - this
- 
-  @@index([movementId])
-  @@index([batchId])
-  @@index([storeId, type, createdAt]) // fast-moving report
-  @@index([outletId, productId, variantId, type, createdAt]) // history / speed of one item in one outlet
+  unitCost Decimal @map("unit_cost") @db.Decimal(12, 2)
+
+  @@index([storeId, type, createdAt])
+  @@index([outletId, productId, variantId, type, createdAt])
   @@map("stock_movement_items")
 }
  

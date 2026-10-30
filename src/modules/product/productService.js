@@ -28,9 +28,6 @@ const mapWriteError = (error, fkMessage = "A related record no longer exists") =
     return error;
 };
 
-const VARIANT_IN_ORDERS =
-    "Some variants are part of existing orders and can't be removed. Keep them in the list and set their quantity to 0 instead.";
-
 // ---------- value helpers ----------
 const toNumber = (v) => (v == null ? null : Number(v));
 
@@ -114,14 +111,20 @@ const checkRefs = async (storeId, { categoryIds, brandId, similarProductIds = []
 };
 
 // ====================== CREATE ======================
-
-export const createProductService = async (storeId, payload) => {
+export const createProductService = async (userId, storeId, payload) => {
     const { variants = [], categoryIds, similarProductIds = [], imageUrls, ...rest } = payload;
-    logger.info({ storeId }, "Attempting to create product");
+    logger.info({ storeId, outletId: rest.outletId }, "Attempting to create product");
 
-    // Instant string work, no network. Throws a 400 before any DB call if a URL is invalid.
-    const plans = imageUrls.map((url) => planNewImage(url, storeId, "products"));
-    const moves = plans.map((p) => p.move);
+    // One plan per distinct URL (the same image may be used by the product and by variants)
+    const planCache = new Map();
+    const plan = (url) => {
+        if (!planCache.has(url)) planCache.set(url, planNewImage(url, storeId, "products"));
+        return planCache.get(url);
+    };
+
+    const productPlans = imageUrls.map(plan);
+    const variantPlans = variants.map((v) => (v.imageUrls ?? []).map(plan));
+    const moves = [...planCache.values()].map((p) => p.move);
 
     await checkRefs(storeId, {
         categoryIds, brandId: rest.brandId, similarProductIds,
@@ -133,16 +136,19 @@ export const createProductService = async (storeId, payload) => {
     for (let attempt = 1; attempt <= SLUG_MAX_ATTEMPTS; attempt++) {
         const slug = attempt === 1 ? baseSlug : `${baseSlug}-${randomSuffix()}`;
         try {
-            const product = await createProductModel(storeId, {
+            const product = await createProductModel(userId, storeId, {
                 ...rest,
                 slug,
-                imageUrls: plans.map((p) => p.url), // final URLs (no temp/) go straight into the DB
+                imageUrls: productPlans.map((p) => p.url),
                 categoryIds,
                 similarProductIds,
-                variants,
+                variants: variants.map((v, i) => ({
+                    ...v,
+                    imageUrls: variantPlans[i].map((p) => p.url), // final URLs, no temp/
+                })),
             });
 
-            dispatchMoves(moves); // fire and forget, the response doesn't wait for Cloudinary
+            dispatchMoves(moves);
 
             logger.info({ storeId, productId: product.id }, "Product created successfully");
             return { statusCode: 201, message: "Product created successfully", data: { product } };
@@ -155,6 +161,7 @@ export const createProductService = async (storeId, payload) => {
 
     throw new AppError("Could not generate a unique slug, please try again", constants.Conflict);
 };
+
 // ====================== READ ======================
 export const getProductsService = async (storeId, query) => {
     const { items, total } = await getProductsModel(storeId, query);
@@ -223,14 +230,20 @@ export const updateGeneralService = async (storeId, productId, payload) => {
     return ok("Product updated successfully", product);
 };
 // ====================== 2. VARIANTS AND INVENTORY ======================
-export const updateInventoryService = async (storeId, productId, payload) => {
+export const updateInventoryService = async (userId, storeId, productId, payload) => {
     logger.info({ storeId, productId }, "Updating product inventory");
 
     const { isAvailable, variants, ...base } = payload;
     const toVariants = variants?.length > 0;
     const skus = toVariants ? variants.map((v) => v.sku) : [base.sku];
 
-    // The product read and the SKU check don't depend on each other
+    // Variant images: same temp -> final flow as create. One plan per distinct URL.
+    const planCache = new Map();
+    const plan = (url) => {
+        if (!planCache.has(url)) planCache.set(url, planNewImage(url, storeId, "products"));
+        return planCache.get(url);
+    };
+
     const [existing] = await Promise.all([
         loadProduct(storeId, productId, {
             id: true, hasVariants: true, sellingPrice: true, crossedPrice: true, variants: { select: { id: true } },
@@ -240,19 +253,23 @@ export const updateInventoryService = async (storeId, productId, payload) => {
 
     const toBase = variants?.length === 0 && existing.hasVariants;
 
-    let data = { isAvailable }; // undefined = unchanged
-    let variantOps;             // undefined = leave variants alone
+    let data = { isAvailable };
+    let variantOps;
+    let writeOffBase = false;
 
     if (toVariants) {
-        // base -> variants, or a sync of the existing variants
         const knownIds = new Set(existing.variants.map((v) => v.id));
         if (variants.some((v) => v.id && !knownIds.has(v.id))) {
             throw new AppError("One or more variants don't belong to this product", constants.BadRequest);
         }
+        // imageUrls undefined = leave the variant's images alone
+        variantOps = variants.map(({ id, ...v }) => ({
+            id,
+            data: { ...v, ...(v.imageUrls && { imageUrls: v.imageUrls.map((u) => plan(u).url) }) },
+        }));
         data = { ...data, hasVariants: true, ...BASE_RESET };
-        variantOps = variants.map(toVariantOp);
+        writeOffBase = !existing.hasVariants; // case 3: the base stock must be written off
     } else if (toBase) {
-        // variants -> base: the request is the full base state
         if (base.sellingPrice == null) {
             throw new AppError("Selling price is required when converting to a product without variants", constants.BadRequest);
         }
@@ -261,6 +278,7 @@ export const updateInventoryService = async (storeId, productId, payload) => {
         data = {
             ...data,
             hasVariants: false,
+            quantity: 0, // the stock is written off first; the base starts at 0
             sellingPrice: base.sellingPrice,
             crossedPrice: base.crossedPrice ?? null,
             costPrice: base.costPrice ?? null,
@@ -269,14 +287,13 @@ export const updateInventoryService = async (storeId, productId, payload) => {
             hsCode: base.hsCode ?? null,
             altBarcode: base.altBarcode ?? null,
         };
-        variantOps = [];
+        variantOps = []; // case 4: every variant is removed
     } else if (existing.hasVariants) {
         const blocked = BASE_ONLY_FIELDS.find((field) => base[field] != null);
         if (blocked) {
             throw new AppError(`${blocked} is set on the variants. Send the variants array to change it`, constants.BadRequest);
         }
     } else {
-        // plain base product edit: compare against stored prices when only one is sent
         if (base.sellingPrice !== undefined || base.crossedPrice !== undefined) {
             const selling = base.sellingPrice ?? toNumber(existing.sellingPrice);
             const crossed = base.crossedPrice === undefined ? toNumber(existing.crossedPrice) : base.crossedPrice;
@@ -285,10 +302,11 @@ export const updateInventoryService = async (storeId, productId, payload) => {
         data = { ...data, ...base };
     }
 
-    const product = await guarded(
-        () => updateInventoryModel(storeId, productId, { ...data, variants: variantOps }),
-        { fkMessage: VARIANT_IN_ORDERS }
+    const product = await guarded(() =>
+        updateInventoryModel(userId, storeId, productId, { ...data, variants: variantOps, writeOffBase })
     );
+
+    dispatchMoves([...planCache.values()].map((p) => p.move));
 
     return ok("Inventory updated successfully", product);
 };
@@ -334,24 +352,21 @@ export const updateSeoService = async (storeId, productId, payload) => {
 };
 
 // ====================== DELETE ======================
-export const deleteProductService = async (storeId, productId) => {
+export const deleteProductService = async (userId, storeId, productId) => {
     logger.info({ storeId, productId }, "Deleting product");
 
-    const deleted = await guarded(() => deleteProductModel(storeId, productId), {
-        fkMessage: "This product can't be deleted because it is part of existing orders. Set its status to ARCHIVED instead.",
-    });
+    const deleted = await deleteProductModel(userId, storeId, productId);
 
     const ids = [
-        ...deleted.imageUrls.map((url) => publicIdOf(url, storeId, "products")),
+        ...new Set(deleted.imageUrls.map((url) => publicIdOf(url, storeId, "products"))),
         publicIdOf(deleted.seoImage, storeId, "product-seo"),
     ].filter(Boolean);
 
-    dispatchDeletes(ids); // worker deletes them, the response doesn't wait
+    dispatchDeletes(ids); // after the commit, the response doesn't wait
 
     logger.info({ storeId, productId }, "Product deleted successfully");
     return { statusCode: 200, message: "Product deleted successfully", data: { id: deleted.id, name: deleted.name } };
 };
-
 
 export const getSellableItemsService = async (storeId, query) => {
     const { items, total } = await getSellableItemsModel(storeId, query);

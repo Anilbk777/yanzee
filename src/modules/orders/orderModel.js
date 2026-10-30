@@ -52,9 +52,9 @@ export const getOrderRefsModel = async (storeId, customerId, productIds, variant
         }),
         variantIds.length
             ? prisma.productVariant.findMany({
-                  where: { storeId, productId: { in: productIds }, id: { in: variantIds } },
-                  select: { id: true, productId: true, name: true, sku: true, sellingPrice: true },
-              })
+                where: { storeId, productId: { in: productIds }, id: { in: variantIds } },
+                select: { id: true, productId: true, name: true, sku: true, sellingPrice: true },
+            })
             : Promise.resolve([]),
     ]);
 
@@ -283,8 +283,12 @@ const applyOrderStockDeductions = async (tx, {
         ),
         mov_items AS (
             INSERT INTO stock_movement_items
-                (id, movement_id, store_id, outlet_id, type, batch_id, product_id, variant_id, quantity, unit_cost)
-            SELECT i.id, i.movement_id, ${storeId}::text, i.outlet_id, 'STOCK_OUT', i.batch_id, i.product_id, i.variant_id, i.qty, i.unit_cost
+                (id, movement_id, store_id, outlet_id, type, batch_id, product_id, variant_id,
+                 product_name, variant_name, sku, quantity, unit_cost)
+            SELECT i.id, i.movement_id, ${storeId}::text, i.outlet_id, 'STOCK_OUT', i.batch_id,
+                   i.product_id, i.variant_id,
+                   sb.product_name, sb.variant_name, sb.sku,
+                   i.qty, i.unit_cost
             FROM unnest(
                 ${picks.map(() => randomUUID())}::text[],
                 ${picks.map((p) => movementIdByOutlet.get(p.outletId))}::text[],
@@ -295,6 +299,7 @@ const applyOrderStockDeductions = async (tx, {
                 ${picks.map((p) => p.quantity)}::int[],
                 ${picks.map((p) => String(p.unitCost))}::numeric[]
             ) AS i(id, movement_id, outlet_id, batch_id, product_id, variant_id, qty, unit_cost)
+            JOIN stock_batches sb ON sb.id = i.batch_id AND sb.store_id = ${storeId}
             RETURNING id
         ),
         upd_batches AS (
@@ -510,9 +515,9 @@ const detailSelect = {
             items: {
                 select: {
                     id: true, quantity: true, unitCost: true,
+                    productId: true, variantId: true,
+                    productName: true, variantName: true, sku: true,
                     batch: { select: { id: true, batchNumber: true, expiryDate: true } },
-                    product: { select: { id: true, name: true } },
-                    variant: { select: { id: true, name: true } },
                 },
             },
         },

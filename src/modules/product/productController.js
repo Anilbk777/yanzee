@@ -14,7 +14,7 @@ import {
 } from "./productService.js";
 
 export const createProductController = asyncHandler(async (req, res) => {
-    ApiResponse(res, await createProductService(req.storeId, req.body));
+    ApiResponse(res, await createProductService(req.userId,req.storeId, req.body));
 });
 
 export const getProductsController = asyncHandler(async (req, res) => {
@@ -30,7 +30,7 @@ export const updateGeneralController = asyncHandler(async (req, res) => {
 });
 
 export const updateInventoryController = asyncHandler(async (req, res) => {
-    ApiResponse(res, await updateInventoryService(req.storeId, req.params.productId, req.body));
+    ApiResponse(res, await updateInventoryService(req.user.id,req.storeId, req.params.productId, req.body));
 });
 
 export const updateCustomController = asyncHandler(async (req, res) => {
@@ -46,7 +46,7 @@ export const updateSeoController = asyncHandler(async (req, res) => {
 });
 
 export const deleteProductController = asyncHandler(async (req, res) => {
-    ApiResponse(res, await deleteProductService(req.storeId, req.params.productId));
+    ApiResponse(res, await deleteProductService(req.user.id, req.storeId, req.params.productId));
 });
 
 export const getSellableItemsController = asyncHandler(async (req, res) => {

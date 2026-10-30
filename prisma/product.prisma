@@ -71,12 +71,9 @@ model Product {
 
   stockStatus StockStatus @default(OUT_OF_STOCK) @map("stock_status")
 
-  outletStocks  OutletStock[]
-  stockBatches  StockBatch[]
-  movementItems StockMovementItem[]
+  outletStocks OutletStock[]
 
   variants      ProductVariant[]
-  orderItems    OrderItem[]
   reviews       Review[]
   couponTargets CouponProduct[]
 
@@ -91,13 +88,17 @@ model Product {
 }
 
 model ProductVariant {
-  id           String      @id @default(uuid())
-  productId    String      @map("product_id")
-  storeId      String      @map("store_id")
-  product      Product     @relation(fields: [productId, storeId], references: [id, storeId], onDelete: Cascade)
-  name         String      @map("name") // e.g., "Red / XL" or "Size 42"
-  size         String?
-  sku          String?
+  id        String  @id @default(uuid())
+  productId String  @map("product_id")
+  storeId   String  @map("store_id")
+  product   Product @relation(fields: [productId, storeId], references: [id, storeId], onDelete: Cascade)
+  name      String  @map("name") // e.g., "Red / XL" or "Size 42"
+  size      String?
+  sku       String?
+
+  imageUrls String[] @default([]) @map("image_urls")
+  isAvailable        Boolean         @default(true) @map("is_available")
+
   colorCodes   String[]    @default([]) @map("color_codes") // Array supporting 1 to 2 HEX/CSS color codes
   crossedPrice Decimal?    @map("crossed_price") @db.Decimal(12, 2)
   sellingPrice Decimal     @map("selling_price") @db.Decimal(12, 2)
@@ -108,14 +109,10 @@ model ProductVariant {
   altBarcode   String?     @map("alt_barcode")
   stockStatus  StockStatus @default(OUT_OF_STOCK) @map("stock_status")
 
-  orderItems OrderItem[]
-
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
   outletStocks  OutletStock[]
-  stockBatches  StockBatch[]
-  movementItems StockMovementItem[]
   couponTargets CouponProduct[]
   reviews       Review[]
 

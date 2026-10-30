@@ -65,10 +65,9 @@ export const pickBatches = async (tx, storeId, needList) => {
     }
     return picks;
 };
-
 // picks: [{ type: "STOCK_OUT" | "STOCK_RESTORE", sign: -1 | +1, batchId, outletId, productId, variantId,
 //           itemKey, quantity, unitCost, sellable }]
-// One movement per (type, outlet), one line per batch. Two queries in total.
+// One movement per (type, outlet), one line per batch. Three queries in total.
 export const recordMovements = async (tx, { storeId, userId, orderId, orderNumber, picks, note }) => {
     if (picks.length === 0) return;
 
@@ -78,6 +77,13 @@ export const recordMovements = async (tx, { storeId, userId, orderId, orderNumbe
         if (!groups.has(k)) groups.set(k, { id: randomUUID(), type: p.type, outletId: p.outletId, list: [] });
         groups.get(k).list.push(p);
     }
+
+    // Names are copied from the batch each line points to. One lookup covers STOCK_OUT and STOCK_RESTORE.
+    const batchRows = await tx.stockBatch.findMany({
+        where: { id: { in: [...new Set(picks.map((p) => p.batchId))] }, storeId },
+        select: { id: true, productName: true, variantName: true, sku: true },
+    });
+    const snapshotByBatch = new Map(batchRows.map((b) => [b.id, b]));
 
     await tx.stockMovement.createMany({
         data: [...groups.values()].map((g) => ({
@@ -92,11 +98,18 @@ export const recordMovements = async (tx, { storeId, userId, orderId, orderNumbe
 
     await tx.stockMovementItem.createMany({
         data: [...groups.values()].flatMap((g) =>
-            g.list.map((p) => ({
-                movementId: g.id, storeId, outletId: p.outletId, type: g.type,
-                batchId: p.batchId, productId: p.productId, variantId: p.variantId,
-                quantity: p.quantity, unitCost: p.unitCost,
-            }))
+            g.list.map((p) => {
+                const s = snapshotByBatch.get(p.batchId);
+                if (!s) throw Object.assign(new Error("Batch missing"), { code: "STOCK_OUT_OF_SYNC" });
+                return {
+                    movementId: g.id, storeId, outletId: p.outletId, type: g.type,
+                    batchId: p.batchId, productId: p.productId, variantId: p.variantId,
+                    productName: s.productName,
+                    variantName: s.variantName,
+                    sku: s.sku,
+                    quantity: p.quantity, unitCost: p.unitCost,
+                };
+            })
         ),
     });
 };
@@ -177,4 +190,28 @@ export const applyStock = async (tx, storeId, picks) => {
         || res.variants !== variants.size || res.products !== products.size) {
         throw Object.assign(new Error("Stock rows out of sync"), { code: "STOCK_OUT_OF_SYNC" });
     }
+};
+
+
+// Restores for products or variants that were deleted are skipped:
+// their stock rows are gone and their batches were written off.
+export const keepLiveRestores = async (tx, storeId, restores) => {
+    if (restores.length === 0) return restores;
+
+    const productIds = [...new Set(restores.map((r) => r.productId))];
+    const variantIds = [...new Set(restores.map((r) => r.variantId).filter(Boolean))];
+
+    const [products, variants] = await Promise.all([
+        tx.product.findMany({ where: { storeId, id: { in: productIds } }, select: { id: true } }),
+        variantIds.length
+            ? tx.productVariant.findMany({ where: { storeId, id: { in: variantIds } }, select: { id: true } })
+            : [],
+    ]);
+
+    const liveProducts = new Set(products.map((p) => p.id));
+    const liveVariants = new Set(variants.map((v) => v.id));
+
+    return restores.filter(
+        (r) => liveProducts.has(r.productId) && (!r.variantId || liveVariants.has(r.variantId))
+    );
 };

@@ -213,10 +213,10 @@ export const buildLinesFromRequest = async (storeId, order, groups, items) => {
 
     const products = fresh.length
         ? await getProductsForOrderModel(
-              storeId,
-              [...new Set(fresh.map((i) => i.productId))],
-              [...new Set(fresh.map((i) => i.variantId).filter(Boolean))]
-          )
+            storeId,
+            [...new Set(fresh.map((i) => i.productId))],
+            [...new Set(fresh.map((i) => i.variantId).filter(Boolean))]
+        )
         : [];
     const productMap = new Map(products.map((p) => [p.id, p]));
 
@@ -541,18 +541,23 @@ export const planPayment = (order, { status, markAsPaid }) => {
     return null;
 };
 
-export const buildActivities = ({ actor, order, payload, restores, money }) => {
+export const buildActivities = ({ actor, order, payload, restores, skippedUnits = 0, money }) => {
     const base = actorFields(actor);
     const restoredUnits = restores.reduce((s, r) => s + r.quantity, 0);
+
+    const skippedNote = skippedUnits > 0
+        ? ` (${skippedUnits} unit${skippedUnits === 1 ? "" : "s"} not restored: product deleted)`
+        : "";
 
     const entries = [
         {
             ...base, action: "ORDER_STATUS_CHANGED",
-            title: `Changed status from ${STATUS_LABEL[order.status]} to ${STATUS_LABEL[payload.status]}`,
+            title: `Changed status from ${STATUS_LABEL[order.status]} to ${STATUS_LABEL[payload.status]}${skippedNote}`,
             meta: {
                 from: order.status, to: payload.status,
                 reason: payload.reason ?? null,
                 stockRestored: restoredUnits,
+                stockSkipped: skippedUnits,
                 refunded: money?.kind === "refund" ? fromCents(money.amount) : null,
             },
         },

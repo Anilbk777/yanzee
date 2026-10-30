@@ -82,3 +82,12 @@ export const ItemBatchesQuerySchema = z.object({
     outletId: z.uuid("Invalid outlet id").optional(),
     onlyAvailable: z.enum(["true", "false"]).transform((v) => v === "true").default(false), // hide sold-out batches
 });
+
+
+export const InventoryOverviewQuerySchema = z.object({
+    outletId: z.uuid("Invalid outlet id").optional(), // default: all active outlets
+    lowStockThreshold: z.coerce.number().int().min(1).max(100000).default(10),
+    expiringDays: z.coerce.number().int().min(1).max(365).default(30),
+    fastMovingDays: z.coerce.number().int().min(1).max(365).default(30),
+    listLimit: z.coerce.number().int().min(1).max(20).default(5), // rows in each list
+});

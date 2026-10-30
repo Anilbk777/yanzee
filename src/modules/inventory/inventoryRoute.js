@@ -3,12 +3,19 @@ import authenticateUser from "../../middlewares/authenticate.js";
 import verifyStore from "../../middlewares/verifyStore.js";
 import requireStoreRole from "../../middlewares/requireStoreRole.js";
 import { validateRequest, validateQuery , validateParams } from "../../middlewares/requestValidate.js";
-import { StockInSchema, ListMovementsQuerySchema, ListStockQuerySchema ,ItemParamsSchema,ItemBatchesQuerySchema} from "./inventoryValidation.js";
-import { stockInController, getMovementsController, getStockController ,getItemBatchesController} from "./inventoryController.js";
+import { StockInSchema, ListMovementsQuerySchema, ListStockQuerySchema ,ItemParamsSchema,ItemBatchesQuerySchema,InventoryOverviewQuerySchema} from "./inventoryValidation.js";
+import { stockInController, getMovementsController, getStockController ,getItemBatchesController,getInventoryOverviewController} from "./inventoryController.js";
 
 const inventoryRouter = Router();
 
 inventoryRouter.use(authenticateUser, verifyStore);
+
+inventoryRouter.get(
+    "/overview",
+    requireStoreRole("OWNER", "MANAGER"), // it shows cost values
+    validateQuery(InventoryOverviewQuerySchema),
+    getInventoryOverviewController
+);
 
 inventoryRouter.post(
     "/stock-in",

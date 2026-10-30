@@ -1,7 +1,7 @@
 import prisma from "../../config/dbConfig.js";
 import { fromCents } from "../../utils/money.js";
 import { allocateStock, splitLines } from "./orderAllocation.js";
-import { lockAvailability, lockBatches, pickBatches, recordMovements, applyStock } from "./orderHelpers/orderStockHelper.js";
+import { lockAvailability, lockBatches, pickBatches, recordMovements, applyStock ,keepLiveRestores} from "./orderHelpers/orderStockHelper.js";
 
 // ---------- reads ----------
 export const getOrderForEditModel = (storeId, orderId) =>
@@ -215,9 +215,11 @@ const updateOrderFinancialsAndActivities = async (tx, { storeId, orderId, order,
 
 // 6. Record stock movements and adjust outlet stock quantities
 const syncStockMovementsAndLevels = async (tx, { storeId, userId, orderId, orderNumber, takePicks, restores }) => {
+    const liveRestores = await keepLiveRestores(tx, storeId, restores);
+
     const changes = [
         ...takePicks.map((x) => ({ ...x, type: "STOCK_OUT", sign: -1 })),
-        ...restores.map((x) => ({ ...x, type: "STOCK_RESTORE", sign: +1 })),
+        ...liveRestores.map((x) => ({ ...x, type: "STOCK_RESTORE", sign: +1 })),
     ];
     if (changes.length === 0) return;
 
@@ -367,3 +369,7 @@ export const updateOrderStatusModel = (storeId, userId, p) =>
         },
         { timeout: 20000, maxWait: 10000 }
     );
+
+
+    // Restores for deleted products or variants are dropped. Used before the transaction, to count what is skipped.
+export const getLiveRestoresModel = (storeId, restores) => keepLiveRestores(prisma, storeId, restores);

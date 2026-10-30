@@ -291,9 +291,10 @@ export const formatOrderDetails = (o) => {
             totalValue: m.totalCost,
             items: m.items.map((x) => ({
                 id: x.id,
-                name: x.variant ? `${x.product.name} — ${x.variant.name}` : x.product.name,
-                productId: x.product.id,
-                variantId: x.variant?.id ?? null,
+                name: x.variantName ? `${x.productName} — ${x.variantName}` : x.productName,
+                productId: x.productId,
+                variantId: x.variantId,
+                sku: x.sku,
                 batchId: x.batch.id,
                 batchNumber: x.batch.batchNumber,
                 batchExpiryDate: x.batch.expiryDate,
