@@ -22,7 +22,7 @@ const orderSelect = {
     },
 };
 
-const CHANNEL_FILTER = { POS: "POS", WEB: "WEBSITE" }; // ALL = no filter, so it includes ADMIN too
+const CHANNEL_FILTER = { ADMIN:"ADMIN",POS: "POS", WEB: "WEBSITE" }; // ALL = no filter, so it includes ADMIN too
 
 const listSelect = {
     id: true, orderNumber: true, status: true, channel: true,

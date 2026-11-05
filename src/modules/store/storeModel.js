@@ -94,3 +94,28 @@ export const getStoreInfoModel = async (userId, storeId) => {
     });
     return membership?.store ?? null;
 };
+
+
+export const countStoreDependenciesModel = (storeId) =>
+    prisma.store.findUnique({
+        where: { id: storeId },
+        select: {
+            _count: {
+                select: {
+                    outlets: true,        // stock batches (onDelete: Restrict)
+                    outletStocks: true,      // stock history at this outlet (Restrict)
+                    stockBatches: true,         // orders placed at this outlet (Restrict)
+                    stockMovements: true,     // order lines fulfilled from this outlet (Restrict)
+                    customers: true,
+                    coupons: true,
+                    members: true,
+                    invites: true,
+                    categories: true,
+                    brands: true,
+                    products: true,
+                    orders: true,
+                    reviews: true,
+                },
+            },
+        },
+    });

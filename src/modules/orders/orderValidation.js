@@ -82,7 +82,7 @@ export const ListOrdersQuerySchema = z
         limit: z.coerce.number().int().min(1).max(100).default(20),
         search: z.string().trim().max(100).optional(), // customer name, phone or order number
         status: z.enum(["PENDING", "PROCESSING", "DISPATCHED", "DELIVERED", "CANCELLED", "RETURNED"], "Invalid status").optional(),
-        channel: z.enum(["ALL", "POS", "WEB"], "Channel must be ALL, POS or WEB").default("ALL"),
+        channel: z.enum(["ALL", "ADMIN", "POS", "WEB"], "Channel must be ALL, POS or WEB").default("ALL"),
         from: instant("start").optional(),
         to: instant("end").optional(),
     })

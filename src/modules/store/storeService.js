@@ -8,7 +8,8 @@ import {
     getStoreByIdModel,
     updateStoreDetailModel,
     deleteStoreModel,
-    getStoreInfoModel
+    getStoreInfoModel,
+    countStoreDependenciesModel
 } from "./storeModel.js";
 
 import {
@@ -120,8 +121,12 @@ const updateStoreDetailService = async (userId, storeId, payload) => {
 const deleteStoreService = async (userId, storeId) => {
     logger.info({ userId, storeId }, "deleting store");
 
+    const count = await countStoreDependenciesModel(storeId);
+    if (count){
+        throw new AppError("Store can't be deleted because it may be link with outlets, stocks, products,categories, brand, orders, etc.", constants.BadRequest)
+    }
     const deletedStore = await deleteStoreModel(userId, storeId);
-    await invalidateStore(store.id);
+    await invalidateStore(deletedStore.id);
 
     dispatchDeletes([
         publicIdOf(deletedStore.logo, storeId, "logos"),

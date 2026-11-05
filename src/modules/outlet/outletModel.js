@@ -64,7 +64,13 @@ export const countOutletDependenciesModel = (storeId, outletId) =>
         where: { id: outletId, storeId },
         select: {
             _count: {
-                select: { receipts: true, batches: true, movements: true, transfersOut: true, transfersIn: true, orders: true },
+                 select: {
+                    batches: true,        // stock batches (onDelete: Restrict)
+                    movements: true,      // stock history at this outlet (Restrict)
+                    otherMovements: true, // transfers that point at this outlet (Restrict)
+                    orders: true,         // orders placed at this outlet (Restrict)
+                    orderItems: true,     // order lines fulfilled from this outlet (Restrict)
+                },
             },
         },
     });
