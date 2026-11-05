@@ -19,6 +19,7 @@ outletRouter.use(authenticateUser, verifyStore);
 outletRouter.get("/", validateQuery(ListOutletsQuerySchema), controller.getOutletsController);
 outletRouter.post("/", canWrite, validateRequest(CreateOutletSchema), controller.createOutletController);
 
+outletRouter.patch("/change-main", canDelete, validateRequest(OutletIdSchema), controller.setMainOutletController);
 outletRouter.get("/:outletId", outletId, controller.getOutletController);
 outletRouter.patch("/:outletId", canWrite, outletId, validateRequest(UpdateOutletSchema), controller.updateOutletController);
 outletRouter.patch("/:outletId/toggle-status", canWrite, outletId, controller.setOutletStatusController);

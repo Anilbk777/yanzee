@@ -3,7 +3,7 @@ import AppError from "../../utils/AppError.js";
 import constants from "../../utils/constants.js";
 import {
     createOutletModel, getOutletsModel, getOutletByIdModel, updateOutletModel,
-    setOutletStatusModel, deleteOutletModel, getOutletFlagsModel, countOutletDependenciesModel,
+    setOutletStatusModel, deleteOutletModel, getOutletFlagsModel, countOutletDependenciesModel,setMainOutletModel
 } from "./outletModel.js";
 
 const isUniqueViolation = (error) => error?.code === "P2002";
@@ -120,4 +120,36 @@ export const deleteOutletService = async (storeId, outletId) => {
         }
         throw error;
     }
+};
+
+const isMainConflict = (error) =>
+    error?.code === "P2002" || (error?.code === "P2010" && error?.meta?.code === "23505");
+
+export const setMainOutletService = async (storeId, outletId) => {
+    logger.info({ storeId, outletId }, "Changing the main outlet");
+
+    let result;
+    try {
+        result = await setMainOutletModel(storeId, outletId);
+    } catch (error) {
+        if (isMainConflict(error)) {
+            throw new AppError("The main outlet was changed by someone else. Reload and try again", constants.Conflict);
+        }
+        throw error;
+    }
+
+    const { target, oldMain, changed, outlet } = result;
+
+    if (!target) throw new AppError("Outlet not found", constants.NotFound);
+    if (target.isMain) throw new AppError("This outlet is already the main outlet", constants.Conflict);
+    if (!target.isActive) throw new AppError("Turn this outlet on before making it the main outlet", constants.Conflict);
+    if (!changed) throw new AppError("The outlet changed while saving. Please retry", constants.Conflict);
+
+    logger.info({ storeId, from: oldMain?.id, to: outletId }, "Main outlet changed");
+
+    return {
+        statusCode: 200,
+        message: `${outlet.name} is now the main outlet`,
+        data: { outlet, previousMain: oldMain ?? null },
+    };
 };

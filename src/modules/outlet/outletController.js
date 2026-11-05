@@ -25,3 +25,7 @@ export const setOutletStatusController = asyncHandler(async (req, res) => {
 export const deleteOutletController = asyncHandler(async (req, res) => {
     ApiResponse(res, await service.deleteOutletService(req.storeId, req.params.outletId));
 });
+
+export const setMainOutletController = asyncHandler(async (req, res) => {
+    ApiResponse(res, await service.setMainOutletService(req.storeId, req.body.outletId));
+});

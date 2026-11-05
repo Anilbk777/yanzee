@@ -68,3 +68,39 @@ export const countOutletDependenciesModel = (storeId, outletId) =>
             },
         },
     });
+
+
+// ONE round trip: read the target and the current main, move the flag, read the result.
+// Both updates carry the same condition ("the target is active and not already main"), so if the
+// target can't become main (missing, inactive, already main), neither update changes anything.
+// A concurrent change makes the second update hit the unique index (P2002).
+export const setMainOutletModel = async (storeId, outletId) => {
+    // The condition, written once: "the store has this outlet, and it is active and not main"
+    const targetQualifies = {
+        store: { outlets: { some: { id: outletId, isActive: true, isMain: false } } },
+    };
+
+    const [target, oldMain, , setResult, after] = await prisma.$transaction([
+        prisma.outlet.findUnique({
+            where: { id: outletId, storeId },
+            select: { id: true, name: true, isMain: true, isActive: true },
+        }),
+        prisma.outlet.findFirst({ where: { storeId, isMain: true }, select: { id: true, name: true } }),
+
+        // 1. the old main outlet stops being main, only when the target qualifies
+        prisma.outlet.updateMany({
+            where: { storeId, isMain: true, ...targetQualifies },
+            data: { isMain: false },
+        }),
+
+        // 2. the target becomes main
+        prisma.outlet.updateMany({
+            where: { id: outletId, storeId, isActive: true, isMain: false },
+            data: { isMain: true },
+        }),
+
+        prisma.outlet.findUnique({ where: { id: outletId, storeId }, select: outletSelect }),
+    ]);
+
+    return { target, oldMain, changed: setResult.count === 1, outlet: after };
+};

@@ -23,7 +23,7 @@ export const SetOutletStatusSchema = z.object({
 
 export const OutletIdSchema = z.object({
     outletId: z.uuid("Invalid outlet id"),
-});
+});   
 
 export const ListOutletsQuerySchema = z.object({
     page: z.coerce.number().int().min(1).default(1),
